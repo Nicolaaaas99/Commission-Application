@@ -21,8 +21,6 @@ DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 STAGING_TABLE = 'ZZImportStage'
 
-# Debug print (temporary)
-print(os.environ.get('DB_SERVER'))  # Should print SIGMAFIN-RDS\EVOLUTION
 
 # --- Stored Procedure Names ---
 SELECT_PAYMENTS_SP = 'sp_SelectPaymentsToProcess'
