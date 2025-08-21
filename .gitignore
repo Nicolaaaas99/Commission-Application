@@ -1,0 +1,24 @@
+# Python/Flask ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+.env
+venv/
+.env.local
+.pytest_cache/
+
+# Uploads and temp files
+Uploads/*
+*.log
+*.tmp
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/

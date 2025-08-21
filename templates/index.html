@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Commission Processor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" xintegrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        body {
+            display: flex;
+            min-height: 100vh;
+            background-color: #f8f9fa;
+        }
+        #sidebar {
+            width: 280px;
+            min-height: 100vh;
+            background: #343a40;
+            color: #fff;
+        }
+        #sidebar .nav-link {
+            color: #adb5bd;
+            font-size: 1.1rem;
+            padding: 0.75rem 1.5rem;
+            border-left: 3px solid transparent;
+        }
+        #sidebar .nav-link:hover {
+            color: #fff;
+            background: #495057;
+            border-left-color: #0d6efd;
+        }
+        #sidebar .nav-link.active {
+            color: #fff;
+            font-weight: bold;
+            background: #0d6efd;
+            border-left-color: #fff;
+        }
+        #sidebar .nav-link.disabled {
+            color: #6c757d;
+            pointer-events: none;
+            cursor: default;
+        }
+        #content {
+            flex-grow: 1;
+            padding: 2.5rem;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .split-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .split-row .form-select, .split-row .form-control { flex: 1; }
+        .split-row .btn-danger { flex-shrink: 0; }
+        .swal2-html-container { overflow: visible !important; }
+        .policy-row { cursor: pointer; }
+        #payment-checkbox-container {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <nav id="sidebar" class="d-flex flex-column flex-shrink-0 p-3">
+        <a href="/" class="d-flex align-items-center mb-3 mb-md-0 me-md-auto text-white text-decoration-none">
+            <i class="bi bi-calculator-fill me-2 fs-4"></i>
+            <span class="fs-4">Commission App</span>
+        </a>
+        <hr>
+        <ul class="nav nav-pills flex-column mb-auto">
+            <li class="nav-item">
+                <a href="#" class="nav-link active" data-page="upload-page"><i class="bi bi-cloud-upload me-2"></i>Upload Statement</a>
+            </li>
+            <li>
+                <a href="#" class="nav-link" data-page="actions-page">
+                    <i class="bi bi-exclamation-triangle me-2"></i>Policies Requiring Action
+                    {% if policies_needing_action %}
+                        <span class="badge bg-danger float-end mt-1">{{ policies_needing_action|length }}</span>
+                    {% endif %}
+                </a>
+            </li>
+            <li>
+                <a href="#" class="nav-link" data-page="edit-page"><i class="bi bi-pencil-square me-2"></i>Edit Policy</a>
+            </li>
+            <li>
+                <a href="#" class="nav-link {% if actions_pending %}disabled{% endif %}" data-page="batch-page"
+                   title="{% if actions_pending %}Resolve pending actions to enable{% endif %}">
+                   <i class="bi bi-file-earmark-spreadsheet me-2"></i>Create Batch
+                </a>
+            </li>
+            <li>
+                <a href="#" class="nav-link {% if actions_pending %}disabled{% endif %}" data-page="run-page" 
+                   title="{% if actions_pending %}Resolve pending actions to enable{% endif %}">
+                   <i class="bi bi-play-circle me-2"></i>Commission Run
+                </a>
+            </li>
+            <li>
+                <a href="{{ url_for('report') }}" class="nav-link"><i class="bi bi-bar-chart-line me-2"></i>Broker Report</a>
+            </li>
+        </ul>
+        <hr>
+    </nav>
+
+    <main id="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <div id="upload-page" class="page active">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Upload Commission Statement</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <form action="{{ url_for('upload_file_route') }}" method="post" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="company" class="form-label">Company:</label>
+                            <select id="company" name="company_id" class="form-select" required>
+                                <option value="" selected disabled>-- Select a Company --</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="insurer" class="form-label">Insurer:</label>
+                            <select id="insurer" name="insurer_link" class="form-select" required disabled>
+                                <option value="" selected disabled>-- Select an Insurer --</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Payment Transaction(s):</label>
+                            <div id="payment-checkbox-container" class="border rounded p-3 bg-light">
+                                <small class="text-muted">Select an insurer to see available payments.</small>
+                            </div>
+                        </div>
+                        <div class="mb-4">
+                            <label for="file" class="form-label">Commission File (CSV or XLSX):</label>
+                            <input type="file" id="file" name="file" class="form-control" accept=".csv,.xlsx" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-lg"><i class="bi bi-check2-circle me-2"></i>Upload and Process</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <div id="actions-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Policies Requiring Action</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Policy Number</th>
+                                    <th>Policy Holder</th>
+                                    <th>Current Split Total</th>
+                                    <th>Action Required</th>
+                                </tr>
+                            </thead>
+                            <tbody id="action-policies-body">
+                                {% if policies_needing_action %}
+                                    {% for policy in policies_needing_action %}
+                                    <tr class="policy-row"
+                                        data-policy-link="{{ policy.PolicyLink }}" 
+                                        data-policy-number="{{ policy.PolicyNumber }}" 
+                                        data-policy-holder="{{ policy.PolicyHolder }}"
+                                        data-policy-insurance-type-id="{{ policy.PolicyInsuranceTypeId|default('') }}"
+                                        data-policy-compliant="{{ policy.PolicyCompliant|default('No') }}"
+                                        data-is-edit="false">
+                                        <td>{{ policy.PolicyNumber }}</td>
+                                        <td>{{ policy.PolicyHolder }}</td>
+                                        <td>{{ "%.2f"|format(policy.CurrentSplitTotal * 100) }}%</td>
+                                        <td><span class="badge bg-warning text-dark">{{ policy.ActionNeeded }}</span></td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr><td colspan="4" class="text-center p-3 text-success"><i class="bi bi-check-circle-fill me-2"></i>All policies are configured correctly!</td></tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="edit-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Edit Existing Policy</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <p class="card-text">Search for a policy to edit its compliance status, insurance type, and commission splits.</p>
+                    <div class="input-group mb-3">
+                        <input type="text" id="search-input" class="form-control" placeholder="Enter policy number or holder name (min 3 chars)..." aria-label="Search Policy">
+                        <button class="btn btn-outline-secondary" type="button" id="search-btn"><i class="bi bi-search"></i> Search</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-hover" id="search-results-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Policy Number</th>
+                                    <th>Policy Holder</th>
+                                    <th>Insurer</th>
+                                    <th>Insurance Type</th>
+                                    <th>Compliant</th>
+                                </tr>
+                            </thead>
+                            <tbody id="search-results-body">
+                                <tr><td colspan="5" class="text-center text-muted p-3">Search for a policy to see results.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="batch-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Create Sage 200 Batch</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <p class="card-text">Select a commission statement that has been fully processed in this app but not yet in Sage to generate a CSV batch file for import.</p>
+                    
+                    <div class="mb-3">
+                        <label for="batch-statement-select" class="form-label">Unprocessed Statement:</label>
+                        <select id="batch-statement-select" class="form-select">
+                            <option value="" selected disabled>Loading statements...</option>
+                        </select>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-success" id="create-batch-btn" disabled>
+                            <i class="bi bi-download me-2"></i>Create and Download Batch
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="run-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Commission Run</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <p class="card-text">Select a company, then choose a period to run or cancel the commission allocation.</p>
+                    
+                    <div class="mb-3">
+                        <label for="run-company-select" class="form-label">Company:</label>
+                        <select id="run-company-select" class="form-select">
+                            <option value="" selected disabled>-- Select a Company --</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="commission-period-select" class="form-label">Commission Period:</label>
+                        <select id="commission-period-select" class="form-select" disabled>
+                            <option value="" selected disabled>Select a company first...</option>
+                        </select>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-success" id="run-commission-btn" disabled><i class="bi bi-check-all me-2"></i>Run Commission</button>
+                        <button class="btn btn-danger" id="cancel-commission-btn" disabled><i class="bi bi-x-circle me-2"></i>Cancel Run for Period</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" xintegrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        
+        let brokers = [];
+        let insuranceTypes = [];
+        const companySelect = document.getElementById('company');
+        const insurerSelect = document.getElementById('insurer');
+        const paymentContainer = document.getElementById('payment-checkbox-container');
+        const searchInput = document.getElementById('search-input');
+        const searchResultsBody = document.getElementById('search-results-body');
+
+        // --- Sidebar Navigation Logic ---
+        const sidebarLinks = document.querySelectorAll('#sidebar .nav-link');
+        const pages = document.querySelectorAll('.page');
+
+        sidebarLinks.forEach(link => {
+            if (link.getAttribute('href') !== '#' || link.classList.contains('disabled')) return;
+            link.addEventListener('click', function (e) {
+                e.preventDefault();
+                sidebarLinks.forEach(l => l.classList.remove('active'));
+                this.classList.add('active');
+                const pageId = this.getAttribute('data-page');
+                pages.forEach(p => p.classList.remove('active'));
+                const targetPage = document.getElementById(pageId);
+                if (targetPage) {
+                    targetPage.classList.add('active');
+                    if (pageId === 'batch-page') {
+                        loadUnprocessedStatements();
+                    }
+                }
+            });
+        });
+
+        // --- Helper Functions ---
+        function createComplianceDropdown(isCompliant) {
+            return `
+                <select id="compliance-select" class="form-select">
+                    <option value="Yes" ${isCompliant === 'Yes' ? 'selected' : ''}>Yes</option>
+                    <option value="No" ${isCompliant === 'No' ? 'selected' : ''}>No</option>
+                </select>`;
+        }
+        function createInsuranceTypeDropdown(selectedTypeId = null) {
+            const options = insuranceTypes.map(it => `<option value="${it.id}" ${it.id == selectedTypeId ? 'selected' : ''}>${it.name}</option>`).join('');
+            return `<select id="insurance-type-select" class="form-select"><option value="" ${!selectedTypeId ? 'selected' : ''} disabled>-- Select Insurance Type --</option>${options}</select>`;
+        }
+        function createBrokerDropdown(selectedBrokerId = null) {
+            const options = brokers.map(b => `<option value="${b.id}" ${b.id == selectedBrokerId ? 'selected' : ''}>${b.name}</option>`).join('');
+            return `<select class="form-select broker-select"><option value="" ${!selectedBrokerId ? 'selected' : ''} disabled>-- Select Broker --</option>${options}</select>`;
+        }
+        function createSplitRowHTML(split = null, index) {
+            const brokerId = split ? split.SplitBrokerId : null;
+            const percent = split ? (split.SplitPercent * 100).toFixed(2) : '';
+            return `
+                <div class="split-row" data-index="${index}">
+                    ${createBrokerDropdown(brokerId)}
+                    <input type="number" class="form-control split-percent" placeholder="e.g., 50" min="0.01" max="100" step="0.01" value="${percent}">
+                    <button type="button" class="btn btn-sm btn-danger remove-split-btn">X</button>
+                </div>`;
+        }
+        
+        const runCompanySelect = document.getElementById('run-company-select');
+        const commissionPeriodSelect = document.getElementById('commission-period-select');
+        const runBtn = document.getElementById('run-commission-btn');
+        const cancelBtn = document.getElementById('cancel-commission-btn');
+
+        // --- FETCH INITIAL DATA ---
+        Promise.all([
+            fetch("{{ url_for('get_brokers') }}").then(res => res.json()),
+            fetch("{{ url_for('get_insurance_types') }}").then(res => res.json()),
+            fetch('/api/companies').then(res => res.json())
+        ]).then(([brokerData, typeData, companyData]) => {
+            brokers = brokerData;
+            insuranceTypes = typeData;
+            
+            companySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            runCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            if (Array.isArray(companyData)) {
+                companyData.forEach(company => {
+                    companySelect.add(new Option(company.name, company.id));
+                    runCompanySelect.add(new Option(company.name, company.id));
+                });
+            }
+        }).catch(error => {
+            console.error("Failed to load initial data:", error);
+            Swal.fire('Initialization Error', 'Could not load required data. Please refresh the page.', 'error');
+        });
+
+        // --- CASCADING UPLOAD DROPDOWNS ---
+        const resetPaymentContainer = (text) => {
+            paymentContainer.innerHTML = `<small class="text-muted">${text}</small>`;
+        };
+        const resetSelect = (select, defaultText) => {
+            select.innerHTML = `<option value="" selected disabled>-- ${defaultText} --</option>`;
+            select.disabled = true;
+        };
+
+        companySelect.addEventListener('change', () => {
+            const companyId = companySelect.value;
+            resetSelect(insurerSelect, 'Select an Insurer');
+            resetPaymentContainer('Select an insurer to see available payments.');
+            if (!companyId) return;
+            insurerSelect.disabled = false;
+            fetch(`/api/insurers/${companyId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (Array.isArray(data)) {
+                        data.forEach(insurer => insurerSelect.add(new Option(insurer.name, insurer.id)));
+                    }
+                });
+        });
+
+        insurerSelect.addEventListener('change', () => {
+            const companyId = companySelect.value;
+            const insurerLink = insurerSelect.value;
+            resetPaymentContainer('Loading payments...');
+            if (!companyId || !insurerLink) return;
+
+            fetch(`/api/payments/${companyId}/${insurerLink}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.length === 0) {
+                        resetPaymentContainer('No available payments found for this insurer.');
+                        return;
+                    }
+                    paymentContainer.innerHTML = data.map(payment => `
+                        <div class="form-check">
+                            <input class="form-check-input payment-checkbox" type="checkbox" name="payment_ids" value="${payment.id}" id="payment-${payment.id}">
+                            <label class="form-check-label" for="payment-${payment.id}">
+                                ${payment.text}
+                            </label>
+                        </div>
+                    `).join('');
+                })
+                .catch(error => {
+                    console.error("Failed to load payments:", error);
+                    resetPaymentContainer('Error loading payments.');
+                });
+        });
+
+        // --- POLICY SEARCH & MODAL LOGIC ---
+        const searchBtn = document.getElementById('search-btn');
+        const performSearch = () => {
+            const term = searchInput.value.trim();
+            if (term.length < 3) {
+                Swal.fire('Search Too Short', 'Please enter at least 3 characters.', 'warning');
+                return;
+            }
+            searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center p-3">Searching...</td></tr>`;
+            fetch(`/api/search_policies?term=${encodeURIComponent(term)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success === false || !Array.isArray(data)) {
+                        searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger p-3">${data.message || 'Error'}</td></tr>`;
+                        return;
+                    }
+                    if (data.length === 0) {
+                        searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted p-3">No policies found.</td></tr>`;
+                        return;
+                    }
+                    searchResultsBody.innerHTML = data.map(policy => `
+                        <tr class="policy-row" 
+                            data-policy-link="${policy.PolicyLink}" 
+                            data-policy-number="${policy.PolicyNumber}" 
+                            data-policy-holder="${policy.PolicyHolder}"
+                            data-policy-insurance-type-id="${policy.PolicyInsuranceTypeId || ''}"
+                            data-policy-compliant="${policy.PolicyCompliant || 'No'}"
+                            data-is-edit="true">
+                            <td>${policy.PolicyNumber}</td>
+                            <td>${policy.PolicyHolder}</td>
+                            <td>${policy.PolicyInsurerName || ''}</td>
+                            <td>${policy.PolicyInsuranceType || '<span class="text-muted">Not Set</span>'}</td>
+                            <td>
+                                <span class="badge ${policy.PolicyCompliant === 'Yes' ? 'bg-success' : 'bg-danger'}">
+                                    ${policy.PolicyCompliant}
+                                </span>
+                            </td>
+                        </tr>
+                    `).join('');
+                });
+        };
+        searchBtn.addEventListener('click', performSearch);
+        searchInput.addEventListener('keyup', (event) => {
+            if (event.key === 'Enter') performSearch();
+        });
+
+        async function showConfigurationModal(policyData) {
+            const isEditMode = policyData.isEdit === 'true';
+            let initialSplits = [];
+            if (isEditMode) {
+                try {
+                    const response = await fetch(`/api/get_policy_splits/${policyData.policyLink}`);
+                    const data = await response.json();
+                    if (data.success === false) throw new Error(data.message);
+                    initialSplits = data;
+                } catch (error) {
+                    Swal.fire('Error', `Could not fetch existing splits: ${error.message}`, 'error');
+                    return;
+                }
+            }
+            const splitsContainerHTML = initialSplits.length > 0 ? initialSplits.map((split, index) => createSplitRowHTML(split, index)).join('') : createSplitRowHTML(null, 0);
+            Swal.fire({
+                title: `${isEditMode ? 'Edit' : 'Configure'} Policy: ${policyData.policyNumber}`,
+                html: `
+                    <p><strong>Holder:</strong> ${policyData.policyHolder}</p>
+                    <div class="mb-3 text-start">
+                        <label class="form-label">Compliant:</label>
+                        ${createComplianceDropdown(policyData.policyCompliant)}
+                    </div>
+                    <div class="mb-3 text-start">
+                        <label class="form-label">Insurance Type:</label>
+                        ${createInsuranceTypeDropdown(policyData.policyInsuranceTypeId)}
+                    </div>
+                    <div class="mb-3 text-start">
+                        <label class="form-label">Commission Splits (Total must be 100%):</label>
+                        <div id="splits-container" class="mt-2">${splitsContainerHTML}</div>
+                        <button id="add-split-btn" class="btn btn-success mt-3">+ Add Split</button>
+                    </div>
+                `,
+                width: '600px',
+                showCancelButton: true,
+                confirmButtonText: 'Save Configuration',
+                confirmButtonColor: '#28a745',
+                didOpen: () => {
+                    const splitsContainer = document.getElementById('splits-container');
+                    document.getElementById('add-split-btn').addEventListener('click', () => {
+                        const index = splitsContainer.querySelectorAll('.split-row').length;
+                        splitsContainer.insertAdjacentHTML('beforeend', createSplitRowHTML(null, index));
+                    });
+                    splitsContainer.addEventListener('click', (event) => {
+                        if (event.target.classList.contains('remove-split-btn')) {
+                            const row = event.target.closest('.split-row');
+                            if (splitsContainer.querySelectorAll('.split-row').length > 1) {
+                                row.remove();
+                            } else {
+                                Swal.fire('Warning', 'At least one split is required.', 'warning');
+                            }
+                        }
+                    });
+                },
+                preConfirm: () => {
+                    const compliance = document.getElementById('compliance-select').value;
+                    const typeId = document.getElementById('insurance-type-select').value;
+                    const splitRows = document.querySelectorAll('#splits-container .split-row');
+                    const splitsPayload = [];
+                    const selectedBrokers = new Set();
+                    let totalPercent = 0;
+                    if (!typeId) { Swal.showValidationMessage('You must select an insurance type.'); return false; }
+                    for (const row of splitRows) {
+                        const percentVal = row.querySelector('.split-percent').value;
+                        const brokerIdVal = row.querySelector('.broker-select').value;
+                        if (!percentVal && !brokerIdVal) continue;
+                        const percent = parseFloat(percentVal);
+                        const brokerId = parseInt(brokerIdVal, 10);
+                        if (!brokerId || isNaN(percent) || percent <= 0) { Swal.showValidationMessage('Each split row must have a broker and a positive percentage.'); return false; }
+                        if (selectedBrokers.has(brokerId)) { Swal.showValidationMessage('Each broker can only be used once.'); return false; }
+                        selectedBrokers.add(brokerId);
+                        totalPercent += percent;
+                        splitsPayload.push({ brokerId: brokerId, percent: percent / 100.0 });
+                    }
+                    if (splitsPayload.length > 0 && Math.abs(totalPercent - 100) > 0.001) { Swal.showValidationMessage(`Total must be 100%. Current total: ${totalPercent.toFixed(2)}%`); return false; }
+                    if (splitsPayload.length === 0) { const confirmZero = window.confirm("You have not defined any splits. This will remove all existing splits. Are you sure?"); if (!confirmZero) return false; }
+                    return { policyLink: parseInt(policyData.policyLink, 10), isCompliant: compliance, insuranceTypeId: parseInt(typeId, 10), splits: splitsPayload };
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    Swal.fire({ title: 'Saving...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+                    const { policyLink, isCompliant, insuranceTypeId, splits } = result.value;
+                    Promise.all([
+                        fetch("{{ url_for('update_compliance') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policyLink, isCompliant }) }).then(res => res.json()),
+                        fetch("{{ url_for('save_insurance_type') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policyLink, insuranceTypeId }) }).then(res => res.json()),
+                        fetch("{{ url_for('save_splits') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policyLink, splits }) }).then(res => res.json())
+                    ]).then(([compResult, typeResult, splitsResult]) => {
+                        if (compResult.success && typeResult.success && splitsResult.success) {
+                            Swal.fire({ title: 'Success!', text: 'Policy configuration saved. The page will now reload.', icon: 'success', timer: 2000, showConfirmButton: false })
+                            .then(() => window.location.reload());
+                        } else {
+                            const errorMsg = [compResult, typeResult, splitsResult].filter(r => !r.success).map(r => r.message).join(' ');
+                            Swal.fire('Error!', errorMsg, 'error');
+                        }
+                    });
+                }
+            });
+        }
+        document.body.addEventListener('click', function(event) {
+            const policyRow = event.target.closest('.policy-row');
+            if (policyRow) showConfigurationModal(policyRow.dataset);
+        });
+
+        // --- Commission Run Logic ---
+        runCompanySelect.addEventListener('change', function() {
+            const companyId = this.value;
+            commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Loading periods...</option>';
+            commissionPeriodSelect.disabled = true;
+            runBtn.disabled = true;
+            cancelBtn.disabled = true;
+
+            if (!companyId) {
+                commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Select a company first...</option>';
+                return;
+            }
+
+            fetch(`/api/get_commission_periods/${companyId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success === false || !Array.isArray(data)) { throw new Error(data.message || 'Could not load periods.'); }
+                    commissionPeriodSelect.innerHTML = '<option value="" selected disabled>-- Select a Period --</option>';
+                    if (data.length > 0) {
+                        data.forEach(p => {
+                            const option = new Option(p.ComPeriodYearMonth, p.ComPeriodId);
+                            option.dataset.yearMonth = p.ComPeriodYearMonth;
+                            commissionPeriodSelect.add(option);
+                        });
+                        commissionPeriodSelect.disabled = false;
+                    } else {
+                        commissionPeriodSelect.innerHTML = '<option value="" selected disabled>No available periods</option>';
+                    }
+                })
+                .catch(error => {
+                    Swal.fire('Error', error.message, 'error');
+                    commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Error loading periods</option>';
+                });
+        });
+        
+        commissionPeriodSelect.addEventListener('change', function() {
+            const isPeriodSelected = !!this.value;
+            runBtn.disabled = !isPeriodSelected;
+            cancelBtn.disabled = !isPeriodSelected;
+        });
+
+        runBtn.addEventListener('click', function() {
+            const selectedOption = commissionPeriodSelect.options[commissionPeriodSelect.selectedIndex];
+            const companyId = runCompanySelect.value;
+            if (!selectedOption || !selectedOption.value || !companyId) { Swal.fire('Missing Information', 'Please select a company and a commission period.', 'warning'); return; }
+            const periodLink = selectedOption.value;
+            const yearMonth = selectedOption.dataset.yearMonth;
+
+            Swal.fire({
+                title: 'Confirm Commission Run',
+                text: `This will process commissions for period ${yearMonth}. This action cannot be undone easily. Are you sure?`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, run it!',
+                confirmButtonColor: '#28a745'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const payload = { periodLink, yearMonth, companyId };
+                    fetch("{{ url_for('execute_commission_run') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+                    .then(res => res.json()).then(data => {
+                        if (data.success) { Swal.fire('Success!', data.message, 'success').then(() => runCompanySelect.dispatchEvent(new Event('change'))); } 
+                        else { Swal.fire('Error!', data.message, 'error'); }
+                    });
+                }
+            });
+        });
+
+        cancelBtn.addEventListener('click', function() {
+            const selectedOption = commissionPeriodSelect.options[commissionPeriodSelect.selectedIndex];
+            const companyId = runCompanySelect.value;
+            if (!selectedOption || !selectedOption.value || !companyId) { Swal.fire('Missing Information', 'Please select a company and a commission period.', 'warning'); return; }
+            const periodLink = selectedOption.value;
+            const yearMonth = selectedOption.dataset.yearMonth;
+            
+            Swal.fire({
+                title: 'Confirm Cancellation',
+                text: `This will cancel the commission run for period ${yearMonth}. This should only be done to correct an error. Are you sure?`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, cancel it!',
+                confirmButtonColor: '#dc3545'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const payload = { periodLink, companyId };
+                    fetch("{{ url_for('cancel_commission_run') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+                    .then(res => res.json()).then(data => {
+                        if (data.success) { Swal.fire('Cancelled!', data.message, 'success').then(() => runCompanySelect.dispatchEvent(new Event('change'))); } 
+                        else { Swal.fire('Error!', data.message, 'error'); }
+                    });
+                }
+            });
+        });
+
+        // --- Batch Creation Logic (Corrected) ---
+        const batchStatementSelect = document.getElementById('batch-statement-select');
+        const createBatchBtn = document.getElementById('create-batch-btn');
+
+        function loadUnprocessedStatements() {
+            batchStatementSelect.innerHTML = '<option value="" selected disabled>Loading statements...</option>';
+            createBatchBtn.disabled = true;
+
+            fetch('/api/unprocessed_statements')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success === false || !Array.isArray(data)) {
+                        throw new Error(data.message || 'Could not load statements.');
+                    }
+                    batchStatementSelect.innerHTML = '<option value="" selected disabled>-- Select a Statement --</option>';
+                    if (data.length > 0) {
+                        data.forEach(s => {
+                            const date = new Date(s.StmntDate).toLocaleDateString('en-CA');
+                            const amount = parseFloat(s.StmntTotalAmount).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
+                            const text = `${date} | ${s.StmntReference} | ${amount}`;
+                            // FIX: Use the standardized camelCase key 'stmntLink' for the option value
+                            const option = new Option(text, s.stmntLink);
+                            option.dataset.companyId = s.StmntCompanyId;
+                            option.dataset.insurerId = s.StmntInsurerLink;
+                            option.dataset.reference = s.StmntReference;
+                            batchStatementSelect.add(option);
+                        });
+                    } else {
+                        batchStatementSelect.innerHTML = '<option value="" selected disabled>No unprocessed statements found</option>';
+                    }
+                })
+                .catch(error => {
+                    Swal.fire('Error', error.message, 'error');
+                    batchStatementSelect.innerHTML = '<option value="" selected disabled>Error loading statements</option>';
+                });
+        }
+
+        batchStatementSelect.addEventListener('change', function() {
+            createBatchBtn.disabled = !this.value;
+        });
+
+        createBatchBtn.addEventListener('click', function() {
+            const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
+            if (!selectedOption || !selectedOption.value) {
+                Swal.fire('Missing Information', 'Please select a statement.', 'warning');
+                return;
+            }
+
+            // FIX: Build the payload with standardized camelCase keys to match the backend
+            const payload = {
+                stmntLink: selectedOption.value,
+                companyId: selectedOption.dataset.companyId,
+                insurerId: selectedOption.dataset.insurerId
+            };
+
+            createBatchBtn.disabled = true;
+            createBatchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+
+            fetch('/api/create_batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement("a");
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute("href", url);
+                    const filename = `SageBatch_${selectedOption.dataset.reference}.csv`;
+                    link.setAttribute("download", filename);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    Swal.fire('Success!', `Batch file ${filename} has been downloaded.`, 'success');
+                    loadUnprocessedStatements();
+                } else {
+                    Swal.fire('Error!', data.message, 'error');
+                }
+            })
+            .catch(error => Swal.fire('Error!', `An unexpected error occurred: ${error}`, 'error'))
+            .finally(() => {
+                createBatchBtn.disabled = false;
+                createBatchBtn.innerHTML = '<i class="bi bi-download me-2"></i>Create and Download Batch';
+            });
+        });
+    });
+    </script>
+</body>
+</html>
