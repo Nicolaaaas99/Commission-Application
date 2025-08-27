@@ -40,6 +40,7 @@ CANCEL_RUN_SP = 'sp_CancelCommissionRun'
 GET_BROKER_REPORT_SP = 'sp_GetBrokerCommissionReport'
 GET_COMMISSION_PERIODS_SP = 'sp_GetCommissionPeriods'
 CREATE_BATCH_CSV_SP = 'sp_CreateBatchCSV'
+GET_BROKER_REPORT_PERIODS_SP = 'sp_GetBrokerReportPeriods'
 
 
 # Expected columns for the new upload format
@@ -268,7 +269,7 @@ def get_payments(company_id, insurer_link):
         WHERE p.CommPmtCompanyId = ? 
           AND p.CommPmtInsurerLink = ? 
           AND cp.PmtStmntId IS NULL
-        ORDER BY p.CommPmtDate DESC
+        ORDER BY p.CommPmtDate ASC
     """, company_id, insurer_link)
     payments = [{"id": r.CommPmtAutoIdx, "text": f"{r.PaymentDate} | {r.CommPmtReference} | R {r.CommPmtAmount:,.2f}"} for r in cursor.fetchall()]
     return jsonify(payments)
@@ -435,10 +436,13 @@ def cancel_commission_run():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+
 @app.route('/api/broker_report/<int:broker_id>')
 def get_broker_report(broker_id):
     compliance_status = request.args.get('compliance', 'All')
     split_status = request.args.get('split_status', 'All')
+    # Add period_id to the arguments, defaulting to 0 for the 'Current' period.
+    period_id = request.args.get('period_id', 0, type=int) 
 
     if not broker_id:
         return jsonify({"success": False, "message": "Broker ID is required."}), 400
@@ -451,7 +455,8 @@ def get_broker_report(broker_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?", broker_id, compliance_status, split_status)
+        # Pass the new period_id to the updated stored procedure
+        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, compliance_status, split_status, period_id)
         
         columns = [column[0] for column in cursor.description]
         report_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -469,21 +474,45 @@ def get_unprocessed_statements():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT StmntCompanyId, StmntInsurerLink, StmntDate, StmntReference, StmntTotalAmount FROM dbo._uvUnprocessedStatements ORDER BY StmntDate DESC")
+        # The view already contains StmntLink, so we query it directly.
+        sql = """
+            SELECT 
+                StmntLink, 
+                StmntCompanyId, 
+                StmntInsurerLink, 
+                StmntDate, 
+                StmntReference, 
+                StmntTotalAmount 
+            FROM dbo._uvUnprocessedStatements 
+            ORDER BY StmntDate ASC
+        """
+        cursor.execute(sql)
         columns = [column[0] for column in cursor.description]
+        # Create a list of dicts, ensuring the key 'StmntLink' is renamed to 'stmntLink' for frontend compatibility.
         statements = []
         for row in cursor.fetchall():
             row_dict = dict(zip(columns, row))
-            cursor.execute("SELECT StmntLink FROM dbo.CommStmntMaster WHERE StmntCompanyId = ? AND StmntInsurerLink = ? AND StmntDate = ? AND StmntReference = ?", 
-                           row_dict['StmntCompanyId'], row_dict['StmntInsurerLink'], row_dict['StmntDate'], row_dict['StmntReference'])
-            stmnt_link_row = cursor.fetchone()
-            if stmnt_link_row:
-                row_dict['stmntLink'] = stmnt_link_row.StmntLink
-                statements.append(row_dict)
-
+            # Standardize the key to camelCase for the frontend JavaScript
+            row_dict['stmntLink'] = row_dict.pop('StmntLink')
+            statements.append(row_dict)
+            
         return jsonify(statements)
     except Exception as e:
         logging.error(f"Error fetching unprocessed statements: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/report_periods/<int:company_id>')
+def get_report_periods(company_id):
+    """Fetches the last 12 closed commission periods plus a 'Current' period for reporting."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("EXEC sp_GetBrokerReportPeriods ?", company_id)
+        columns = [column[0] for column in cursor.description]
+        periods = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(periods)
+    except Exception as e:
+        logging.error(f"Error fetching report periods: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/create_batch', methods=['POST'])
@@ -529,4 +558,4 @@ def create_batch():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050, debug=True)
+    app.run(host='0.0.0.0', port=5050, debug=False)

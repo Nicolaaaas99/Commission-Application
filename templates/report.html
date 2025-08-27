@@ -27,10 +27,8 @@
         .insurer-row td:first-child { padding-left: 2.5rem !important; }
         .subtotal-row td:first-child { padding-left: 0.5rem !important; }
         
-        /* --- FIX: Arrow Icon CSS --- */
-        .toggle-icon { transition: transform 0.2s; display: inline-block; }
-        .clickable-row[aria-expanded="false"] .toggle-icon { transform: rotate(0deg); }
-        .clickable-row[aria-expanded="true"] .toggle-icon { transform: rotate(90deg); }
+        /* --- FIX: Arrow Icon CSS Removed --- */
+        .toggle-icon { display: inline-block; }
 
         @media print {
             body { display: block; }
@@ -61,9 +59,21 @@
             <div class="card-body">
                 <div class="row g-3 align-items-end">
                     <div class="col-md-3">
+                        <label for="company-select" class="form-label">Company:</label>
+                        <select id="company-select" class="form-select">
+                            <option value="" selected disabled>Loading companies...</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label for="period-select" class="form-label">Commission Period:</label>
+                        <select id="period-select" class="form-select" disabled>
+                            <option value="" selected disabled>Select a company</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
                         <label for="broker-select" class="form-label">Broker:</label>
-                        <select id="broker-select" class="form-select">
-                            <option value="" selected disabled>Loading brokers...</option>
+                        <select id="broker-select" class="form-select" disabled>
+                            <option value="" selected disabled>Select company & period</option>
                         </select>
                     </div>
                     <div class="col-md-3">
@@ -126,9 +136,11 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    const companySelect = document.getElementById('company-select');
+    const periodSelect = document.getElementById('period-select');
     const brokerSelect = document.getElementById('broker-select');
     const complianceSelect = document.getElementById('compliance-select');
-    const splitSelect = document.getElementById('split-select'); // New element
+    const splitSelect = document.getElementById('split-select');
     const generateBtn = document.getElementById('generate-report-btn');
     const reportTable = document.querySelector('.report-table');
     const reportBody = document.getElementById('report-body');
@@ -137,24 +149,56 @@ document.addEventListener('DOMContentLoaded', function () {
     let rawReportData = [];
 
     const formatNumber = (num) => parseFloat(num).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const sanitize = (str) => str.replace(/[^a-zA-Z0-9]/g, '');
+    const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9]/g, '');
 
-    fetch("{{ url_for('get_brokers') }}")
+    // --- NEW: Load Companies First ---
+    fetch("/api/companies")
         .then(res => res.json())
-        .then(brokers => {
+        .then(companies => {
+            companySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            if (Array.isArray(companies)) {
+                companies.forEach(company => companySelect.add(new Option(company.name, company.id)));
+            }
+        }).catch(error => Swal.fire('Error', 'Could not load companies.', 'error'));
+
+    // --- NEW: Load Periods on Company Change ---
+    companySelect.addEventListener('change', function() {
+        const companyId = this.value;
+        periodSelect.disabled = true;
+        brokerSelect.disabled = true;
+        generateBtn.disabled = true;
+        periodSelect.innerHTML = '<option value="" selected disabled>Loading periods...</option>';
+        brokerSelect.innerHTML = '<option value="" selected disabled>Select company & period</option>';
+
+        if (!companyId) return;
+
+        Promise.all([
+            fetch(`/api/report_periods/${companyId}`).then(res => res.json()),
+            fetch("/api/brokers").then(res => res.json())
+        ]).then(([periods, brokers]) => {
+            periodSelect.innerHTML = '<option value="" selected disabled>-- Select a Period --</option>';
+            if (Array.isArray(periods)) {
+                periods.forEach(p => periodSelect.add(new Option(p.PeriodYearMonth, p.PeriodId)));
+                periodSelect.disabled = false;
+            }
+
             brokerSelect.innerHTML = '<option value="" selected disabled>-- Select a Broker --</option>';
             if (Array.isArray(brokers)) {
                 brokers.forEach(broker => brokerSelect.add(new Option(broker.name, broker.id)));
+                brokerSelect.disabled = false;
             }
-            generateBtn.disabled = false;
-        }).catch(error => Swal.fire('Error', 'Could not load brokers.', 'error'));
+             generateBtn.disabled = false;
+        }).catch(error => Swal.fire('Error', 'Could not load periods or brokers.', 'error'));
+    });
 
     generateBtn.addEventListener('click', function() {
         const brokerId = brokerSelect.value;
         const complianceStatus = complianceSelect.value;
-        const splitStatus = splitSelect.value; // New value
-        if (!brokerId) {
-            Swal.fire('No Broker Selected', 'Please select a broker from the list.', 'warning');
+        const splitStatus = splitSelect.value;
+        const periodId = periodSelect.value; // NEW
+
+        if (!brokerId || !periodId) { // NEW check for period
+            Swal.fire('Filter Missing', 'Please select a company, period, and broker.', 'warning');
             return;
         }
 
@@ -165,8 +209,8 @@ document.addEventListener('DOMContentLoaded', function () {
         generateBtn.disabled = true;
         generateBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
 
-        // UPDATED: API call with all filters
-        fetch(`/api/broker_report/${brokerId}?compliance=${complianceStatus}&split_status=${splitStatus}`)
+        // UPDATED: API call with all filters, including period_id
+        fetch(`/api/broker_report/${brokerId}?compliance=${complianceStatus}&split_status=${splitStatus}&period_id=${periodId}`)
             .then(response => response.json())
             .then(data => {
                 if (!Array.isArray(data)) throw new Error(data.message || 'Invalid data');
@@ -191,6 +235,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     function buildInteractiveReport(data) {
+        // This function remains largely the same
         const groupedData = new Map();
         const grandTotals = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
         const zeroTemplate = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
@@ -224,20 +269,31 @@ document.addEventListener('DOMContentLoaded', function () {
         html += renderRow('Grand Total', grandTotals, 'total-row');
         reportBody.innerHTML = html;
         
+        // --- IMPROVED: Click handler for plus/minus toggle ---
         document.querySelectorAll('.clickable-row').forEach(row => {
             row.addEventListener('click', function() {
-                // Use Bootstrap's built-in attributes to track state
+                const icon = this.querySelector('.toggle-icon');
+                if (!icon) return;
+                
                 const isExpanded = this.getAttribute('aria-expanded') === 'true';
                 this.setAttribute('aria-expanded', !isExpanded);
+
+                if (!isExpanded) {
+                    icon.classList.remove('bi-plus-lg');
+                    icon.classList.add('bi-dash-lg');
+                } else {
+                    icon.classList.remove('bi-dash-lg');
+                    icon.classList.add('bi-plus-lg');
+                }
             });
         });
     }
     
-    // UPDATED: renderRow function to handle new data structure
+    // --- IMPROVED: renderRow function with plus/minus icon ---
     function renderRow(label, data, cssClass, target, details = { holder: '', split: '' }) {
         const isClickable = !!target;
-        // Use a right-pointing caret by default
-        const icon = isClickable ? '<i class="bi bi-caret-right-fill toggle-icon me-2"></i>' : '';
+        // Use a plus icon for expandable rows
+        const icon = isClickable ? '<i class="bi bi-plus-lg toggle-icon me-2"></i>' : '';
         const clickableClass = isClickable ? 'clickable-row' : '';
         const targetAttr = isClickable ? `data-bs-toggle="collapse" data-bs-target=".${target}" aria-expanded="false"` : '';
         
@@ -245,7 +301,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <tr class="${cssClass} ${clickableClass}" ${targetAttr}>
                 <td>${icon}${label}</td>
                 <td>${details.holder}</td>
-                <td class="mono">${details.split}</td>
+                <td class="mono">${details.split ? (details.split * 100).toFixed(2) + '%' : ''}</td>
                 <td class="mono">${formatNumber(data.AmntExcl)}</td>
                 <td class="mono">${formatNumber(data.CommAmntExcl)}</td>
                 <td class="mono">${formatNumber(data.ResCommAmnt)}</td>
