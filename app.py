@@ -1,5 +1,6 @@
 import os
 import re
+from waitress import serve
 import pandas as pd
 import pyodbc
 from flask import Flask, request, render_template, redirect, flash, jsonify, url_for, g
@@ -41,6 +42,8 @@ GET_BROKER_REPORT_SP = 'sp_GetBrokerCommissionReport'
 GET_COMMISSION_PERIODS_SP = 'sp_GetCommissionPeriods'
 CREATE_BATCH_CSV_SP = 'sp_CreateBatchCSV'
 GET_BROKER_REPORT_PERIODS_SP = 'sp_GetBrokerReportPeriods'
+# --- NEW: Stored procedure name for voiding a batch ---
+VOID_BATCH_CSV_SP = 'sp_VoidBatchCSV'
 
 
 # Expected columns for the new upload format
@@ -224,7 +227,9 @@ def upload_file_route():
         run_sp(PROCESS_IMPORT_SP, int(company_id), int(insurer_link), new_statement['StmntLink'], new_statement['StmntDate'], new_statement['StmntReference'])
         
         run_sp(CREATE_POLICY_SP)
-        run_sp(INSERT_EVOCOMM_SP)
+        #logging.info("Calling sp_RetrieveEvoCommissionSplits NOW...")
+        #run_sp(INSERT_EVOCOMM_SP)
+        #logging.info("Finished sp_RetrieveEvoCommissionSplits.")
         run_sp(INSERT_HIST_SP)
         run_sp(INSERT_HISTSPLIT_SP)
         
@@ -419,7 +424,15 @@ def execute_commission_run():
         run_sp(COMMISSION_RUN_SP, int(period_link), int(year_month), int(company_id))
         return jsonify({"success": True, "message": f"Commission run for period {year_month} completed successfully."})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        error_message = str(e)
+        # Check for our specific validation errors from the stored procedure
+        if 'already been imported' in error_message or 'already been closed' in error_message:
+            # Extract the user-friendly message from the pyodbc error string
+            friendly_message = error_message.split(']')[-1].strip()
+            return jsonify({"success": False, "message": friendly_message}), 400
+        
+        logging.error(f"Error executing commission run: {error_message}")
+        return jsonify({"success": False, "message": "An unexpected database error occurred."}), 500
 
 @app.route('/api/cancel_commission_run', methods=['POST'])
 def cancel_commission_run():
@@ -434,7 +447,15 @@ def cancel_commission_run():
         run_sp(CANCEL_RUN_SP, int(period_link), int(company_id))
         return jsonify({"success": True, "message": f"Commission run for period link {period_link} has been cancelled."})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        error_message = str(e)
+        # Check for our specific validation errors from the stored procedure
+        if 'already been imported' in error_message or 'cannot be cancelled' in error_message:
+            # Extract the user-friendly message from the pyodbc error string
+            friendly_message = error_message.split(']')[-1].strip()
+            return jsonify({"success": False, "message": friendly_message}), 400
+
+        logging.error(f"Error cancelling commission run: {error_message}")
+        return jsonify({"success": False, "message": "An unexpected database error occurred."}), 500
 
 
 @app.route('/api/broker_report/<int:broker_id>')
@@ -464,6 +485,20 @@ def get_broker_report(broker_id):
         
     except Exception as e:
         logging.error(f"Error fetching broker report for ID {broker_id}: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/report_periods/<int:company_id>')
+def get_report_periods(company_id):
+    """Fetches the last 12 closed commission periods plus a 'Current' period for reporting."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("EXEC sp_GetBrokerReportPeriods ?", company_id)
+        columns = [column[0] for column in cursor.description]
+        periods = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(periods)
+    except Exception as e:
+        logging.error(f"Error fetching report periods: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 # --- API Routes for Batch Creation (Corrected) ---
@@ -500,20 +535,7 @@ def get_unprocessed_statements():
     except Exception as e:
         logging.error(f"Error fetching unprocessed statements: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route('/api/report_periods/<int:company_id>')
-def get_report_periods(company_id):
-    """Fetches the last 12 closed commission periods plus a 'Current' period for reporting."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("EXEC sp_GetBrokerReportPeriods ?", company_id)
-        columns = [column[0] for column in cursor.description]
-        periods = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return jsonify(periods)
-    except Exception as e:
-        logging.error(f"Error fetching report periods: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
+    
 
 @app.route('/api/create_batch', methods=['POST'])
 def create_batch():
@@ -529,11 +551,26 @@ def create_batch():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(1)
+            FROM CommStmntHistSplit
+            WHERE HistSplitStmntId = ?
+              AND HistSplitBatchExported = 1
+        """, stmnt_link)
+        already_exported = cursor.fetchone()[0]
+
+        if already_exported > 0:
+            return jsonify({
+                "success": False,
+                "message": "This statement has already been exported and cannot be downloaded again."
+            }), 400
         
         cursor.execute(f"EXEC {CREATE_BATCH_CSV_SP} ?, ?, ?", int(company_id), int(insurer_id), int(stmnt_link))
         
         columns = [column[0] for column in cursor.description]
         batch_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        conn.commit()
 
         # Force TaxType to have leading zeroes
         for row in batch_data:
@@ -556,6 +593,26 @@ def create_batch():
         logging.error(f"Error creating batch for statement link {stmnt_link}: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+# --- NEW: API Route to void an exported batch ---
+@app.route('/api/void_batch', methods=['POST'])
+def void_batch():
+    """Voids a previously exported batch, allowing for re-export."""
+    data = request.get_json()
+    company_id = data.get('companyId')
+    insurer_id = data.get('insurerId')
+    stmnt_link = data.get('stmntLink')
+
+    if not all([company_id, insurer_id, stmnt_link]):
+        return jsonify({"success": False, "message": "Company ID, Insurer ID, and Statement Link are required."}), 400
+
+    try:
+        run_sp(VOID_BATCH_CSV_SP, int(company_id), int(insurer_id), int(stmnt_link))
+        return jsonify({"success": True, "message": "The batch has been successfully voided and can be processed again."})
+    except Exception as e:
+        logging.error(f"Error voiding batch for statement link {stmnt_link}: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050, debug=False)
+    port = int(os.environ.get("PORT", 8080))
+    serve(app, host="127.0.0.1", port=port)

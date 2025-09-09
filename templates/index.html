@@ -221,7 +221,7 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Create Sage 200 Batch</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
-                    <p class="card-text">Select a commission statement that has been fully processed in this app but not yet in Sage to generate a CSV batch file for import.</p>
+                    <p class="card-text">Select a commission statement to generate a CSV batch file for import or to void a previously generated batch.</p>
                     
                     <div class="mb-3">
                         <label for="batch-statement-select" class="form-label">Unprocessed Statement:</label>
@@ -233,6 +233,10 @@
                     <div class="d-flex gap-2">
                         <button class="btn btn-success" id="create-batch-btn" disabled>
                             <i class="bi bi-download me-2"></i>Create and Download Batch
+                        </button>
+                        <!-- NEW: Void Batch Button -->
+                        <button class="btn btn-warning" id="void-batch-btn" disabled>
+                            <i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch
                         </button>
                     </div>
                 </div>
@@ -457,18 +461,27 @@
         async function showConfigurationModal(policyData) {
             const isEditMode = policyData.isEdit === 'true';
             let initialSplits = [];
-            if (isEditMode) {
-                try {
-                    const response = await fetch(`/api/get_policy_splits/${policyData.policyLink}`);
-                    const data = await response.json();
-                    if (data.success === false) throw new Error(data.message);
+            
+            // --- MODIFICATION: Always fetch existing splits for the policy ---
+            try {
+                const response = await fetch(`/api/get_policy_splits/${policyData.policyLink}`);
+                const data = await response.json();
+                if (data.success === false) {
+                    console.error("Could not fetch existing splits:", data.message);
+                    // Continue with empty splits, don't block the UI
+                    initialSplits = [];
+                } else {
                     initialSplits = data;
-                } catch (error) {
-                    Swal.fire('Error', `Could not fetch existing splits: ${error.message}`, 'error');
-                    return;
                 }
+            } catch (error) {
+                Swal.fire('Error', `A network error occurred while fetching policy splits: ${error.message}`, 'error');
+                return; // Exit if there's a network error
             }
-            const splitsContainerHTML = initialSplits.length > 0 ? initialSplits.map((split, index) => createSplitRowHTML(split, index)).join('') : createSplitRowHTML(null, 0);
+
+            const splitsContainerHTML = initialSplits.length > 0 
+                ? initialSplits.map((split, index) => createSplitRowHTML(split, index)).join('') 
+                : createSplitRowHTML(null, 0); // Always show at least one empty row
+
             Swal.fire({
                 title: `${isEditMode ? 'Edit' : 'Configure'} Policy: ${policyData.policyNumber}`,
                 html: `
@@ -529,7 +542,7 @@
                         splitsPayload.push({ brokerId: brokerId, percent: percent / 100.0 });
                     }
                     if (splitsPayload.length > 0 && Math.abs(totalPercent - 100) > 0.001) { Swal.showValidationMessage(`Total must be 100%. Current total: ${totalPercent.toFixed(2)}%`); return false; }
-                    if (splitsPayload.length === 0) { const confirmZero = window.confirm("You have not defined any splits. This will remove all existing splits. Are you sure?"); if (!confirmZero) return false; }
+                    if (splitsPayload.length === 0) { Swal.showValidationMessage(`You must define at least one split.`); return false; }
                     return { policyLink: parseInt(policyData.policyLink, 10), isCompliant: compliance, insuranceTypeId: parseInt(typeId, 10), splits: splitsPayload };
                 }
             }).then((result) => {
@@ -579,6 +592,14 @@
                         data.forEach(p => {
                             const option = new Option(p.ComPeriodYearMonth, p.ComPeriodId);
                             option.dataset.yearMonth = p.ComPeriodYearMonth;
+                            
+                            // Check the new flag from the API response to disable invalid periods
+                            if (!p.IsActionAllowed) {
+                                option.disabled = true;
+                                option.title = 'Action disabled: Newer statements have been imported.';
+                                option.text += ' (Locked)';
+                            }
+
                             commissionPeriodSelect.add(option);
                         });
                         commissionPeriodSelect.disabled = false;
@@ -650,13 +671,15 @@
             });
         });
 
-        // --- Batch Creation Logic (Corrected) ---
+        // --- Batch Creation Logic ---
         const batchStatementSelect = document.getElementById('batch-statement-select');
         const createBatchBtn = document.getElementById('create-batch-btn');
+        const voidBatchBtn = document.getElementById('void-batch-btn'); // NEW
 
         function loadUnprocessedStatements() {
             batchStatementSelect.innerHTML = '<option value="" selected disabled>Loading statements...</option>';
             createBatchBtn.disabled = true;
+            voidBatchBtn.disabled = true; // NEW
 
             fetch('/api/unprocessed_statements')
                 .then(res => res.json())
@@ -670,7 +693,6 @@
                             const date = new Date(s.StmntDate).toLocaleDateString('en-CA');
                             const amount = parseFloat(s.StmntTotalAmount).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
                             const text = `${date} | ${s.StmntReference} | ${amount}`;
-                            // FIX: Use the standardized camelCase key 'stmntLink' for the option value
                             const option = new Option(text, s.stmntLink);
                             option.dataset.companyId = s.StmntCompanyId;
                             option.dataset.insurerId = s.StmntInsurerLink;
@@ -688,7 +710,9 @@
         }
 
         batchStatementSelect.addEventListener('change', function() {
-            createBatchBtn.disabled = !this.value;
+            const isSelected = !!this.value;
+            createBatchBtn.disabled = !isSelected;
+            voidBatchBtn.disabled = !isSelected; // NEW
         });
 
         createBatchBtn.addEventListener('click', function() {
@@ -698,7 +722,6 @@
                 return;
             }
 
-            // FIX: Build the payload with standardized camelCase keys to match the backend
             const payload = {
                 stmntLink: selectedOption.value,
                 companyId: selectedOption.dataset.companyId,
@@ -738,7 +761,57 @@
                 createBatchBtn.innerHTML = '<i class="bi bi-download me-2"></i>Create and Download Batch';
             });
         });
+
+        // --- NEW: Void Batch Button Logic ---
+        voidBatchBtn.addEventListener('click', function() {
+            const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
+            if (!selectedOption || !selectedOption.value) {
+                Swal.fire('Missing Information', 'Please select a statement.', 'warning');
+                return;
+            }
+
+            Swal.fire({
+                title: 'Confirm Voiding Batch',
+                text: `This will reset the export status for statement "${selectedOption.dataset.reference}". This allows you to make corrections and re-export. Are you sure?`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, void it!',
+                confirmButtonColor: '#dc3545'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const payload = {
+                        stmntLink: selectedOption.value,
+                        companyId: selectedOption.dataset.companyId,
+                        insurerId: selectedOption.dataset.insurerId
+                    };
+
+                    voidBatchBtn.disabled = true;
+                    voidBatchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Voiding...';
+
+                    fetch('/api/void_batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire('Success!', data.message, 'success');
+                            loadUnprocessedStatements(); // Refresh the list
+                        } else {
+                            Swal.fire('Error!', data.message, 'error');
+                        }
+                    })
+                    .catch(error => Swal.fire('Error!', `An unexpected error occurred: ${error}`, 'error'))
+                    .finally(() => {
+                        voidBatchBtn.disabled = false;
+                        voidBatchBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch';
+                    });
+                }
+            });
+        });
     });
     </script>
 </body>
 </html>
+
