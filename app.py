@@ -33,7 +33,7 @@ UPDATE_INSURANCE_TYPE_SP = 'sp_UpdatePolicyInsuranceType'
 INSERT_HIST_SP = 'sp_InsertIntoHistoryFromInput'
 INSERT_HISTSPLIT_SP = 'sp_InsertCommStmntHistSplit'
 INSERT_EVOCOMM_SP = 'sp_RetrieveEvoCommissionSplits'
-SEARCH_POLICIES_SP = 'sp_SearchPolicies'
+SEARCH_POLICIES_SP = 'sp_SearchPoliciesAdvanced'
 GET_SPLITS_SP = 'sp_GetPolicySplits'
 UPDATE_COMPLIANCE_SP = 'sp_UpdatePolicyCompliance'
 COMMISSION_RUN_SP = 'sp_ExecuteCommissionRun'
@@ -42,8 +42,9 @@ GET_BROKER_REPORT_SP = 'sp_GetBrokerCommissionReport'
 GET_COMMISSION_PERIODS_SP = 'sp_GetCommissionPeriods'
 CREATE_BATCH_CSV_SP = 'sp_CreateBatchCSV'
 GET_BROKER_REPORT_PERIODS_SP = 'sp_GetBrokerReportPeriods'
-# --- NEW: Stored procedure name for voiding a batch ---
+GET_SPLIT_HISTORY_SP = 'sp_GetPolicySplitHistoryReport'
 VOID_BATCH_CSV_SP = 'sp_VoidBatchCSV'
+
 
 
 # Expected columns for the new upload format
@@ -246,6 +247,11 @@ def upload_file_route():
             
     return redirect(url_for('index'))
 
+@app.route('/split_report')
+def split_report():
+    """Renders the split history report page."""
+    return render_template('split_report.html')
+
 # --- API Routes ---
 @app.route('/api/companies')
 def get_companies():
@@ -299,6 +305,26 @@ def get_report_brokers():
         logging.error(f"Error fetching report brokers: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+@app.route('/api/split_history_report')
+def get_split_history_report():
+    """Fetches split history data based on a date range."""
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    if not start_date or not end_date:
+        return jsonify({"success": False, "message": "Start and end dates are required."}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {GET_SPLIT_HISTORY_SP} ?, ?", start_date, end_date)
+        columns = [column[0] for column in cursor.description]
+        history_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(history_data)
+    except Exception as e:
+        logging.error(f"Error fetching split history report: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 @app.route('/api/insurance_types')
 def get_insurance_types():
     conn = get_db_connection()
@@ -309,18 +335,25 @@ def get_insurance_types():
 
 @app.route('/api/search_policies')
 def search_policies():
+    company_id = request.args.get('company_id', type=int)
+    insurer_id = request.args.get('insurer_id', 0, type=int)
+    broker_id = request.args.get('broker_id', 0, type=int)
     term = request.args.get('term', '')
-    if not term or len(term) < 3:
-        return jsonify({"success": False, "message": "Search term must be at least 3 characters long."}), 400
+    compliance_status = request.args.get('compliance', 'All') 
+
+    if not company_id:
+        return jsonify({"success": False, "message": "A Company must be selected."}), 400
     
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"EXEC {SEARCH_POLICIES_SP} ?", f'%{term}%')
+        # Pass the new compliance parameter to the stored procedure
+        cursor.execute("EXEC sp_SearchPoliciesAdvanced ?, ?, ?, ?, ?", company_id, insurer_id, broker_id, term, compliance_status) 
         columns = [column[0] for column in cursor.description]
         policies = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(policies)
     except Exception as e:
+        logging.error(f"Error searching policies: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/api/get_policy_splits/<int:policy_link>')
@@ -341,6 +374,7 @@ def save_splits():
     data = request.get_json()
     policy_id = data.get('policyLink')
     splits = data.get('splits')
+    user_name = 'System' 
 
     if not policy_id or splits is None:
         return jsonify({"success": False, "message": "Missing data."}), 400
@@ -354,7 +388,8 @@ def save_splits():
         cursor.execute("DELETE FROM [dbo].[CommSplit] WHERE SplitPolicyId = ?", policy_id)
         
         for split in splits:
-            cursor.execute(f"EXEC {INSERT_SPLIT_SP} ?, ?, ?", policy_id, split['brokerId'], split['percent'])
+            cursor.execute(f"EXEC {INSERT_SPLIT_SP} ?, ?, ?, ?", 
+                           policy_id, split['brokerId'], split['percent'], user_name)
         
         run_sp(INSERT_HISTSPLIT_SP)
         conn.commit()
@@ -462,11 +497,11 @@ def cancel_commission_run():
 def get_broker_report(broker_id):
     compliance_status = request.args.get('compliance', 'All')
     split_status = request.args.get('split_status', 'All')
-    # Add period_id to the arguments, defaulting to 0 for the 'Current' period.
     period_id = request.args.get('period_id', 0, type=int) 
 
-    if not broker_id:
+    if broker_id is None:
         return jsonify({"success": False, "message": "Broker ID is required."}), 400
+        
     if compliance_status not in ['Yes', 'No', 'All']:
         return jsonify({"success": False, "message": "Invalid compliance status."}), 400
     if split_status not in ['Split', 'Non-Split', 'All']:
@@ -509,12 +544,13 @@ def get_unprocessed_statements():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # The view already contains StmntLink, so we query it directly.
+        # ADDED InsurerCodeName to the SELECT statement
         sql = """
             SELECT 
                 StmntLink, 
                 StmntCompanyId, 
                 StmntInsurerLink, 
+                InsurerCodeName,
                 StmntDate, 
                 StmntReference, 
                 StmntTotalAmount 
@@ -523,11 +559,9 @@ def get_unprocessed_statements():
         """
         cursor.execute(sql)
         columns = [column[0] for column in cursor.description]
-        # Create a list of dicts, ensuring the key 'StmntLink' is renamed to 'stmntLink' for frontend compatibility.
         statements = []
         for row in cursor.fetchall():
             row_dict = dict(zip(columns, row))
-            # Standardize the key to camelCase for the frontend JavaScript
             row_dict['stmntLink'] = row_dict.pop('StmntLink')
             statements.append(row_dict)
             

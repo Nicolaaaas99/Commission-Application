@@ -182,11 +182,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 periodSelect.disabled = false;
             }
 
-            brokerSelect.innerHTML = '<option value="" selected disabled>-- Select a Broker --</option>';
+            // --- MODIFICATION START ---
+            // Add an "All Brokers" option with a value of 0 and make it the default
+            brokerSelect.innerHTML = '<option value="0" selected>-- All Brokers --</option>';
             if (Array.isArray(brokers)) {
                 brokers.forEach(broker => brokerSelect.add(new Option(broker.name, broker.id)));
-                brokerSelect.disabled = false;
             }
+            brokerSelect.disabled = false; // Always enable the broker dropdown now
+            // --- MODIFICATION END ---
+
              generateBtn.disabled = false;
         }).catch(error => Swal.fire('Error', 'Could not load periods or brokers.', 'error'));
     });

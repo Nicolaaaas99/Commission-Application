@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Commission Processor</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" xintegrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
@@ -99,6 +99,9 @@
             <li>
                 <a href="{{ url_for('report') }}" class="nav-link"><i class="bi bi-bar-chart-line me-2"></i>Broker Report</a>
             </li>
+            <li>
+                <a href="{{ url_for('split_report') }}" class="nav-link"><i class="bi bi-clock-history me-2"></i>Split History Report</a>
+            </li>
         </ul>
         <hr>
     </nav>
@@ -192,10 +195,38 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Edit Existing Policy</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
-                    <p class="card-text">Search for a policy to edit its compliance status, insurance type, and commission splits.</p>
+                    <p class="card-text">Search for policies using the filters below. The results will be limited to the top 100 matches.</p>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3">
+                            <label for="edit-company-select" class="form-label">Company:</label>
+                            <select id="edit-company-select" class="form-select">
+                                <option value="" selected disabled>Loading...</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="edit-insurer-select" class="form-label">Insurer:</label>
+                            <select id="edit-insurer-select" class="form-select" disabled>
+                                <option value="0" selected>-- All Insurers --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="edit-broker-select" class="form-label">Broker:</label>
+                            <select id="edit-broker-select" class="form-select" disabled>
+                                <option value="0" selected>-- All Brokers --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="edit-compliance-select" class="form-label">Compliance Status:</label>
+                            <select id="edit-compliance-select" class="form-select">
+                                <option value="All" selected>All Policies</option>
+                                <option value="Yes">Compliant Only</option>
+                                <option value="No">Non-Compliant Only</option>
+                            </select>
+                        </div>
+                    </div>
                     <div class="input-group mb-3">
-                        <input type="text" id="search-input" class="form-control" placeholder="Enter policy number or holder name (min 3 chars)..." aria-label="Search Policy">
-                        <button class="btn btn-outline-secondary" type="button" id="search-btn"><i class="bi bi-search"></i> Search</button>
+                        <input type="text" id="search-input" class="form-control" placeholder="Filter by policy number or holder name (optional)..." aria-label="Search Policy">
+                        <button class="btn btn-primary" type="button" id="search-btn"><i class="bi bi-search"></i> Search Policies</button>
                     </div>
                     <div class="table-responsive">
                         <table class="table table-hover" id="search-results-table">
@@ -209,7 +240,7 @@
                                 </tr>
                             </thead>
                             <tbody id="search-results-body">
-                                <tr><td colspan="5" class="text-center text-muted p-3">Search for a policy to see results.</td></tr>
+                                <tr><td colspan="5" class="text-center text-muted p-3">Select filters and click search to see results.</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -234,7 +265,6 @@
                         <button class="btn btn-success" id="create-batch-btn" disabled>
                             <i class="bi bi-download me-2"></i>Create and Download Batch
                         </button>
-                        <!-- NEW: Void Batch Button -->
                         <button class="btn btn-warning" id="void-batch-btn" disabled>
                             <i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch
                         </button>
@@ -272,7 +302,7 @@
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" xintegrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function () {
         
@@ -337,6 +367,49 @@
         const commissionPeriodSelect = document.getElementById('commission-period-select');
         const runBtn = document.getElementById('run-commission-btn');
         const cancelBtn = document.getElementById('cancel-commission-btn');
+
+        // --- Logic for Enhanced Policy Edit Search ---
+        const editCompanySelect = document.getElementById('edit-company-select');
+        const editInsurerSelect = document.getElementById('edit-insurer-select');
+        const editBrokerSelect = document.getElementById('edit-broker-select');
+
+        // Populate the Company dropdown on page load
+        fetch('/api/companies')
+            .then(res => res.json())
+            .then(companyData => {
+                editCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+                if (Array.isArray(companyData)) {
+                    companyData.forEach(company => {
+                        editCompanySelect.add(new Option(company.name, company.id));
+                    });
+                }
+            });
+
+        // Load Insurers and Brokers when a Company is selected
+        editCompanySelect.addEventListener('change', function() {
+            const companyId = this.value;
+            editInsurerSelect.innerHTML = '<option value="0" selected>-- All Insurers --</option>';
+            editBrokerSelect.innerHTML = '<option value="0" selected>-- All Brokers --</option>';
+            editInsurerSelect.disabled = true;
+            editBrokerSelect.disabled = true;
+
+            if (!companyId) return;
+
+            Promise.all([
+                fetch(`/api/insurers/${companyId}`).then(res => res.json()),
+                fetch("{{ url_for('get_brokers') }}").then(res => res.json())
+            ]).then(([insurers, brokerData]) => {
+                if(Array.isArray(insurers)) {
+                    insurers.forEach(i => editInsurerSelect.add(new Option(i.name, i.id)));
+                }
+                editInsurerSelect.disabled = false;
+
+                if(Array.isArray(brokerData)) {
+                    brokerData.forEach(b => editBrokerSelect.add(new Option(b.name, b.id)));
+                }
+                editBrokerSelect.disabled = false;
+            });
+        });
 
         // --- FETCH INITIAL DATA ---
         Promise.all([
@@ -415,13 +488,22 @@
         // --- POLICY SEARCH & MODAL LOGIC ---
         const searchBtn = document.getElementById('search-btn');
         const performSearch = () => {
+            const companyId = editCompanySelect.value;
+            const insurerId = editInsurerSelect.value;
+            const brokerId = editBrokerSelect.value;
             const term = searchInput.value.trim();
-            if (term.length < 3) {
-                Swal.fire('Search Too Short', 'Please enter at least 3 characters.', 'warning');
+            const complianceStatus = document.getElementById('edit-compliance-select').value;
+            
+            if (!companyId) {
+                Swal.fire('Filter Missing', 'You must select a Company to search.', 'warning');
                 return;
             }
+
             searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center p-3">Searching...</td></tr>`;
-            fetch(`/api/search_policies?term=${encodeURIComponent(term)}`)
+            
+            const apiUrl = `/api/search_policies?company_id=${companyId}&insurer_id=${insurerId}&broker_id=${brokerId}&compliance=${complianceStatus}&term=${encodeURIComponent(term)}`;
+
+            fetch(apiUrl)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success === false || !Array.isArray(data)) {
@@ -429,7 +511,7 @@
                         return;
                     }
                     if (data.length === 0) {
-                        searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted p-3">No policies found.</td></tr>`;
+                        searchResultsBody.innerHTML = `<tr><td colspan="5" class="text-center text-muted p-3">No policies found matching the criteria.</td></tr>`;
                         return;
                     }
                     searchResultsBody.innerHTML = data.map(policy => `
@@ -462,25 +544,23 @@
             const isEditMode = policyData.isEdit === 'true';
             let initialSplits = [];
             
-            // --- MODIFICATION: Always fetch existing splits for the policy ---
             try {
                 const response = await fetch(`/api/get_policy_splits/${policyData.policyLink}`);
                 const data = await response.json();
                 if (data.success === false) {
                     console.error("Could not fetch existing splits:", data.message);
-                    // Continue with empty splits, don't block the UI
                     initialSplits = [];
                 } else {
                     initialSplits = data;
                 }
             } catch (error) {
                 Swal.fire('Error', `A network error occurred while fetching policy splits: ${error.message}`, 'error');
-                return; // Exit if there's a network error
+                return;
             }
 
             const splitsContainerHTML = initialSplits.length > 0 
                 ? initialSplits.map((split, index) => createSplitRowHTML(split, index)).join('') 
-                : createSplitRowHTML(null, 0); // Always show at least one empty row
+                : createSplitRowHTML(null, 0);
 
             Swal.fire({
                 title: `${isEditMode ? 'Edit' : 'Configure'} Policy: ${policyData.policyNumber}`,
@@ -592,14 +672,11 @@
                         data.forEach(p => {
                             const option = new Option(p.ComPeriodYearMonth, p.ComPeriodId);
                             option.dataset.yearMonth = p.ComPeriodYearMonth;
-                            
-                            // Check the new flag from the API response to disable invalid periods
                             if (!p.IsActionAllowed) {
                                 option.disabled = true;
                                 option.title = 'Action disabled: Newer statements have been imported.';
                                 option.text += ' (Locked)';
                             }
-
                             commissionPeriodSelect.add(option);
                         });
                         commissionPeriodSelect.disabled = false;
@@ -674,12 +751,12 @@
         // --- Batch Creation Logic ---
         const batchStatementSelect = document.getElementById('batch-statement-select');
         const createBatchBtn = document.getElementById('create-batch-btn');
-        const voidBatchBtn = document.getElementById('void-batch-btn'); // NEW
+        const voidBatchBtn = document.getElementById('void-batch-btn');
 
         function loadUnprocessedStatements() {
             batchStatementSelect.innerHTML = '<option value="" selected disabled>Loading statements...</option>';
             createBatchBtn.disabled = true;
-            voidBatchBtn.disabled = true; // NEW
+            voidBatchBtn.disabled = true;
 
             fetch('/api/unprocessed_statements')
                 .then(res => res.json())
@@ -692,7 +769,7 @@
                         data.forEach(s => {
                             const date = new Date(s.StmntDate).toLocaleDateString('en-CA');
                             const amount = parseFloat(s.StmntTotalAmount).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
-                            const text = `${date} | ${s.StmntReference} | ${amount}`;
+                            const text = `${date} | ${s.InsurerCodeName} | ${s.StmntReference} | ${amount}`;
                             const option = new Option(text, s.stmntLink);
                             option.dataset.companyId = s.StmntCompanyId;
                             option.dataset.insurerId = s.StmntInsurerLink;
@@ -712,7 +789,7 @@
         batchStatementSelect.addEventListener('change', function() {
             const isSelected = !!this.value;
             createBatchBtn.disabled = !isSelected;
-            voidBatchBtn.disabled = !isSelected; // NEW
+            voidBatchBtn.disabled = !isSelected;
         });
 
         createBatchBtn.addEventListener('click', function() {
@@ -762,7 +839,6 @@
             });
         });
 
-        // --- NEW: Void Batch Button Logic ---
         voidBatchBtn.addEventListener('click', function() {
             const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
             if (!selectedOption || !selectedOption.value) {
@@ -797,7 +873,7 @@
                     .then(data => {
                         if (data.success) {
                             Swal.fire('Success!', data.message, 'success');
-                            loadUnprocessedStatements(); // Refresh the list
+                            loadUnprocessedStatements();
                         } else {
                             Swal.fire('Error!', data.message, 'error');
                         }
@@ -814,4 +890,3 @@
     </script>
 </body>
 </html>
-
