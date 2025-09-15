@@ -155,10 +155,16 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Policies Requiring Action</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
+                    <div class="mb-3">
+                        <button id="bulk-configure-btn" class="btn btn-info" disabled>
+                            <i class="bi bi-pencil-square me-2"></i>Bulk Configure
+                        </button>
+                    </div>
                     <div class="table-responsive">
                         <table class="table table-hover">
                             <thead class="table-light">
                                 <tr>
+                                    <th style="width: 5%;"><input class="form-check-input" type="checkbox" id="check-all-policies"></th>
                                     <th>Policy Number</th>
                                     <th>Policy Holder</th>
                                     <th>Current Split Total</th>
@@ -175,6 +181,7 @@
                                         data-policy-insurance-type-id="{{ policy.PolicyInsuranceTypeId|default('') }}"
                                         data-policy-compliant="{{ policy.PolicyCompliant|default('No') }}"
                                         data-is-edit="false">
+                                        <td><input class="form-check-input policy-checkbox" type="checkbox" value="{{ policy.PolicyLink }}"></td>
                                         <td>{{ policy.PolicyNumber }}</td>
                                         <td>{{ policy.PolicyHolder }}</td>
                                         <td>{{ "%.2f"|format(policy.CurrentSplitTotal * 100) }}%</td>
@@ -182,7 +189,7 @@
                                     </tr>
                                     {% endfor %}
                                 {% else %}
-                                    <tr><td colspan="4" class="text-center p-3 text-success"><i class="bi bi-check-circle-fill me-2"></i>All policies are configured correctly!</td></tr>
+                                    <tr><td colspan="5" class="text-center p-3 text-success"><i class="bi bi-check-circle-fill me-2"></i>All policies are configured correctly!</td></tr>
                                 {% endif %}
                             </tbody>
                         </table>
@@ -313,6 +320,16 @@
         const paymentContainer = document.getElementById('payment-checkbox-container');
         const searchInput = document.getElementById('search-input');
         const searchResultsBody = document.getElementById('search-results-body');
+
+        // --- Checkbox Click Prevention ---
+        const actionPoliciesBody = document.getElementById('action-policies-body');
+        if (actionPoliciesBody) {
+            actionPoliciesBody.addEventListener('click', (event) => {
+                if (event.target.classList.contains('policy-checkbox')) {
+                    event.stopPropagation(); // Prevent checkbox clicks from triggering policy-row modal
+                }
+            });
+        }
 
         // --- Sidebar Navigation Logic ---
         const sidebarLinks = document.querySelectorAll('#sidebar .nav-link');
@@ -649,6 +666,136 @@
             const policyRow = event.target.closest('.policy-row');
             if (policyRow) showConfigurationModal(policyRow.dataset);
         });
+
+        // --- NEW: Bulk Policy Configuration Logic ---
+        const checkAllPolicies = document.getElementById('check-all-policies');
+        const bulkConfigureBtn = document.getElementById('bulk-configure-btn');
+
+        function updateBulkButtonStatus() {
+            const checkedBoxes = actionPoliciesBody.querySelectorAll('.policy-checkbox:checked');
+            bulkConfigureBtn.disabled = checkedBoxes.length === 0;
+        }
+
+        if(actionPoliciesBody) {
+            actionPoliciesBody.addEventListener('change', (event) => {
+                if (event.target.classList.contains('policy-checkbox')) {
+                    updateBulkButtonStatus();
+                }
+            });
+        }
+            
+        if(checkAllPolicies) {
+            checkAllPolicies.addEventListener('click', () => {
+                const allCheckboxes = actionPoliciesBody.querySelectorAll('.policy-checkbox');
+                allCheckboxes.forEach(checkbox => {
+                    checkbox.checked = checkAllPolicies.checked;
+                });
+                updateBulkButtonStatus();
+            });
+        }
+                
+        if(bulkConfigureBtn) {
+            bulkConfigureBtn.addEventListener('click', () => {
+                const checkedBoxes = actionPoliciesBody.querySelectorAll('.policy-checkbox:checked');
+                const policyIds = Array.from(checkedBoxes).map(cb => parseInt(cb.value, 10));
+                
+                Swal.fire({
+                    title: `Bulk Configure ${policyIds.length} Policies`,
+                    html: `
+                        <div class="mb-3 text-start">
+                            <label class="form-label">Compliant:</label>
+                            <select id="bulk-compliance-select" class="form-select">
+                                <option value="" selected>-- Select Compliance --</option>
+                                <option value="Yes">Yes</option>
+                                <option value="No">No</option>
+                            </select>
+                        </div>
+                        <div class="mb-3 text-start">
+                            <label class="form-label">Insurance Type:</label>
+                            ${createInsuranceTypeDropdown()}
+                        </div>
+                        <div class="mb-3 text-start">
+                            <label class="form-label">Commission Splits (Total must be 100%):</label>
+                            <div id="bulk-splits-container" class="mt-2">${createSplitRowHTML(null, 0)}</div>
+                            <button id="bulk-add-split-btn" class="btn btn-success mt-3">+ Add Split</button>
+                        </div>
+                    `,
+                    width: '600px',
+                    showCancelButton: true,
+                    confirmButtonText: 'Apply to All',
+                    confirmButtonColor: '#28a745',
+                    didOpen: () => {
+                        const container = document.getElementById('bulk-splits-container');
+                        document.getElementById('bulk-add-split-btn').addEventListener('click', () => {
+                            const index = container.querySelectorAll('.split-row').length;
+                            container.insertAdjacentHTML('beforeend', createSplitRowHTML(null, index));
+                        });
+                        container.addEventListener('click', (event) => {
+                            if (event.target.classList.contains('remove-split-btn')) {
+                                const row = event.target.closest('.split-row');
+                                if (container.querySelectorAll('.split-row').length > 1) {
+                                    row.remove();
+                                } else {
+                                    Swal.fire('Warning', 'At least one split is required.', 'warning');
+                                }
+                            }
+                        });
+                    },
+                    preConfirm: () => {
+                        const compliance = document.getElementById('bulk-compliance-select').value;
+                        const typeId = document.getElementById('insurance-type-select').value;
+                        const splitRows = document.querySelectorAll('#bulk-splits-container .split-row');
+                        const splitsPayload = [];
+                        const selectedBrokers = new Set();
+                        let totalPercent = 0;
+                        for (const row of splitRows) {
+                            const percentVal = row.querySelector('.split-percent').value;
+                            const brokerIdVal = row.querySelector('.broker-select').value;
+                            if (!percentVal && !brokerIdVal) continue;
+                            const percent = parseFloat(percentVal);
+                            const brokerId = parseInt(brokerIdVal, 10);
+                            if (!brokerId || isNaN(percent) || percent <= 0) {
+                                Swal.showValidationMessage('Each split must have a broker and a positive percentage.');
+                                return false;
+                            }
+                            if (selectedBrokers.has(brokerId)) {
+                                Swal.showValidationMessage('Each broker can only be used once.');
+                                return false;
+                            }
+                            selectedBrokers.add(brokerId);
+                            totalPercent += percent;
+                            splitsPayload.push({ brokerId, percent: percent / 100.0 });
+                        }
+                        if (splitsPayload.length > 0 && Math.abs(totalPercent - 100) > 0.001) {
+                            Swal.showValidationMessage(`Total must be 100%. Current total: ${totalPercent.toFixed(2)}%`);
+                            return false;
+                        }
+                        if (splitsPayload.length === 0) {
+                            Swal.showValidationMessage(`You must define at least one split.`);
+                            return false;
+                        }
+                        return { policyIds, splits: splitsPayload, compliance, insuranceTypeId: typeId || undefined };
+                    }
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        const payload = result.value;
+                        fetch('/api/bulk_save_splits', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                Swal.fire('Success!', data.message, 'success').then(() => window.location.reload());
+                            } else {
+                                Swal.fire('Error!', data.message, 'error');
+                            }
+                        });
+                    }
+                });
+            });
+        }
 
         // --- Commission Run Logic ---
         runCompanySelect.addEventListener('change', function() {

@@ -400,6 +400,50 @@ def save_splits():
     finally:
         if conn: conn.autocommit = True
 
+@app.route('/api/bulk_save_splits', methods=['POST'])
+def bulk_save_splits():
+    data = request.get_json()
+    policy_ids = data.get('policyIds')
+    splits = data.get('splits')
+    compliance = data.get('compliance')          # optional: 'Yes' or 'No'
+    insurance_type_id = data.get('insuranceTypeId')  # optional
+
+    if not policy_ids or not splits:
+        return jsonify({"success": False, "message": "A list of policy IDs and splits is required."}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        policy_ids_csv = ",".join(str(int(p)) for p in policy_ids)
+        # splits: list of {brokerId, percent} where percent is a 0..1 float
+        split_parts = [f"{int(s['brokerId'])}:{float(s['percent']):.8f}" for s in splits]
+        split_defs_csv = ",".join(split_parts)
+
+        # Call the new CSV wrapper stored-proc
+        cursor.execute("EXEC dbo.sp_BulkApplyPolicySplits_CSV ?, ?, ?", policy_ids_csv, split_defs_csv, 'SystemBulk')
+        conn.commit()
+
+        # If compliance or insurance type provided, apply per-policy (simple approach)
+        if compliance in ('Yes','No') or insurance_type_id:
+            for pid in policy_ids:
+                if compliance in ('Yes','No'):
+                    cursor.execute("EXEC sp_UpdatePolicyCompliance ?, ?", int(pid), compliance)
+                if insurance_type_id:
+                    cursor.execute("EXEC sp_UpdatePolicyInsuranceType ?, ?", int(pid), int(insurance_type_id))
+            conn.commit()
+
+        # create history splits
+        cursor.execute("EXEC sp_InsertCommStmntHistSplit")
+        conn.commit()
+
+        return jsonify({"success": True, "message": f"{len(policy_ids)} policies updated successfully!"})
+
+    except Exception as e:
+        logging.error("Error during bulk split save: %s", e)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 
 @app.route('/api/save_insurance_type', methods=['POST'])
 def save_insurance_type():
