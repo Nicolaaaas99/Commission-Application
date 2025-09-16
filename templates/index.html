@@ -8,58 +8,21 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        body {
-            display: flex;
-            min-height: 100vh;
-            background-color: #f8f9fa;
-        }
-        #sidebar {
-            width: 280px;
-            min-height: 100vh;
-            background: #343a40;
-            color: #fff;
-        }
-        #sidebar .nav-link {
-            color: #adb5bd;
-            font-size: 1.1rem;
-            padding: 0.75rem 1.5rem;
-            border-left: 3px solid transparent;
-        }
-        #sidebar .nav-link:hover {
-            color: #fff;
-            background: #495057;
-            border-left-color: #0d6efd;
-        }
-        #sidebar .nav-link.active {
-            color: #fff;
-            font-weight: bold;
-            background: #0d6efd;
-            border-left-color: #fff;
-        }
-        #sidebar .nav-link.disabled {
-            color: #6c757d;
-            pointer-events: none;
-            cursor: default;
-        }
-        #content {
-            flex-grow: 1;
-            padding: 2.5rem;
-        }
-        .page {
-            display: none;
-        }
-        .page.active {
-            display: block;
-        }
+        body { display: flex; min-height: 100vh; background-color: #f8f9fa; }
+        #sidebar { width: 280px; min-height: 100vh; background: #343a40; color: #fff; }
+        #sidebar .nav-link { color: #adb5bd; font-size: 1.1rem; padding: 0.75rem 1.5rem; border-left: 3px solid transparent; }
+        #sidebar .nav-link:hover { color: #fff; background: #495057; border-left-color: #0d6efd; }
+        #sidebar .nav-link.active { color: #fff; font-weight: bold; background: #0d6efd; border-left-color: #fff; }
+        #sidebar .nav-link.disabled { color: #6c757d; pointer-events: none; cursor: default; }
+        #content { flex-grow: 1; padding: 2.5rem; }
+        .page { display: none; }
+        .page.active { display: block; }
         .split-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
         .split-row .form-select, .split-row .form-control { flex: 1; }
         .split-row .btn-danger { flex-shrink: 0; }
         .swal2-html-container { overflow: visible !important; }
         .policy-row { cursor: pointer; }
-        #payment-checkbox-container {
-            max-height: 200px;
-            overflow-y: auto;
-        }
+        #payment-checkbox-container { max-height: 200px; overflow-y: auto; }
     </style>
 </head>
 <body>
@@ -97,10 +60,7 @@
                 </a>
             </li>
             <li>
-                <a href="{{ url_for('report') }}" class="nav-link"><i class="bi bi-bar-chart-line me-2"></i>Broker Report</a>
-            </li>
-            <li>
-                <a href="{{ url_for('split_report') }}" class="nav-link"><i class="bi bi-clock-history me-2"></i>Split History Report</a>
+                <a href="{{ url_for('reports') }}" class="nav-link"><i class="bi bi-journal-text me-2"></i>Reports</a>
             </li>
         </ul>
         <hr>
@@ -284,7 +244,7 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Commission Run</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
-                    <p class="card-text">Select a company, then choose a period to run or cancel the commission allocation.</p>
+                    <p class="card-text">Select a company, then choose a period to run or cancel the commission allocation. You can also sync the latest closed period to Evolution.</p>
                     
                     <div class="mb-3">
                         <label for="run-company-select" class="form-label">Company:</label>
@@ -304,6 +264,13 @@
                         <button class="btn btn-success" id="run-commission-btn" disabled><i class="bi bi-check-all me-2"></i>Run Commission</button>
                         <button class="btn btn-danger" id="cancel-commission-btn" disabled><i class="bi bi-x-circle me-2"></i>Cancel Run for Period</button>
                     </div>
+                    
+                    <hr class="my-4">
+                    <p class="card-text text-muted">The actions below apply to the <strong>latest closed period</strong> for the selected company.</p>
+                     <div class="d-flex gap-2">
+                        <button class="btn btn-info" id="sync-evolution-btn" disabled><i class="bi bi-arrow-repeat me-2"></i>Sync to Evolution</button>
+                        <button class="btn btn-warning" id="unsync-evolution-btn" disabled><i class="bi bi-arrow-counterclockwise me-2"></i>Unsync from Evolution</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -321,17 +288,15 @@
         const searchInput = document.getElementById('search-input');
         const searchResultsBody = document.getElementById('search-results-body');
 
-        // --- Checkbox Click Prevention ---
         const actionPoliciesBody = document.getElementById('action-policies-body');
         if (actionPoliciesBody) {
             actionPoliciesBody.addEventListener('click', (event) => {
                 if (event.target.classList.contains('policy-checkbox')) {
-                    event.stopPropagation(); // Prevent checkbox clicks from triggering policy-row modal
+                    event.stopPropagation();
                 }
             });
         }
 
-        // --- Sidebar Navigation Logic ---
         const sidebarLinks = document.querySelectorAll('#sidebar .nav-link');
         const pages = document.querySelectorAll('.page');
 
@@ -353,7 +318,6 @@
             });
         });
 
-        // --- Helper Functions ---
         function createComplianceDropdown(isCompliant) {
             return `
                 <select id="compliance-select" class="form-select">
@@ -384,13 +348,13 @@
         const commissionPeriodSelect = document.getElementById('commission-period-select');
         const runBtn = document.getElementById('run-commission-btn');
         const cancelBtn = document.getElementById('cancel-commission-btn');
+        const syncBtn = document.getElementById('sync-evolution-btn');
+        const unsyncBtn = document.getElementById('unsync-evolution-btn');
 
-        // --- Logic for Enhanced Policy Edit Search ---
         const editCompanySelect = document.getElementById('edit-company-select');
         const editInsurerSelect = document.getElementById('edit-insurer-select');
         const editBrokerSelect = document.getElementById('edit-broker-select');
 
-        // Populate the Company dropdown on page load
         fetch('/api/companies')
             .then(res => res.json())
             .then(companyData => {
@@ -402,7 +366,6 @@
                 }
             });
 
-        // Load Insurers and Brokers when a Company is selected
         editCompanySelect.addEventListener('change', function() {
             const companyId = this.value;
             editInsurerSelect.innerHTML = '<option value="0" selected>-- All Insurers --</option>';
@@ -428,7 +391,6 @@
             });
         });
 
-        // --- FETCH INITIAL DATA ---
         Promise.all([
             fetch("{{ url_for('get_brokers') }}").then(res => res.json()),
             fetch("{{ url_for('get_insurance_types') }}").then(res => res.json()),
@@ -450,7 +412,6 @@
             Swal.fire('Initialization Error', 'Could not load required data. Please refresh the page.', 'error');
         });
 
-        // --- CASCADING UPLOAD DROPDOWNS ---
         const resetPaymentContainer = (text) => {
             paymentContainer.innerHTML = `<small class="text-muted">${text}</small>`;
         };
@@ -502,7 +463,6 @@
                 });
         });
 
-        // --- POLICY SEARCH & MODAL LOGIC ---
         const searchBtn = document.getElementById('search-btn');
         const performSearch = () => {
             const companyId = editCompanySelect.value;
@@ -667,7 +627,6 @@
             if (policyRow) showConfigurationModal(policyRow.dataset);
         });
 
-        // --- NEW: Bulk Policy Configuration Logic ---
         const checkAllPolicies = document.getElementById('check-all-policies');
         const bulkConfigureBtn = document.getElementById('bulk-configure-btn');
 
@@ -797,13 +756,14 @@
             });
         }
 
-        // --- Commission Run Logic ---
         runCompanySelect.addEventListener('change', function() {
             const companyId = this.value;
             commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Loading periods...</option>';
             commissionPeriodSelect.disabled = true;
             runBtn.disabled = true;
             cancelBtn.disabled = true;
+            syncBtn.disabled = !companyId;
+            unsyncBtn.disabled = !companyId;
 
             if (!companyId) {
                 commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Select a company first...</option>';
@@ -895,7 +855,68 @@
             });
         });
 
-        // --- Batch Creation Logic ---
+        syncBtn.addEventListener('click', function() {
+            const companyId = runCompanySelect.value;
+            const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
+            if (!companyId) { return; }
+
+            Swal.fire({
+                title: 'Confirm Sync to Evolution',
+                html: `This will update references in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This should only be done after a successful commission run. <br><br>Are you sure you want to proceed?`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Sync It!',
+                confirmButtonColor: '#17a2b8'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    fetch('/api/sync_commission', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companyId: parseInt(companyId) })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire('Success!', data.message, 'success');
+                        } else {
+                            Swal.fire('Error!', data.message, 'error');
+                        }
+                    });
+                }
+            });
+        });
+
+        unsyncBtn.addEventListener('click', function() {
+            const companyId = runCompanySelect.value;
+            const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
+            if (!companyId) { return; }
+
+            Swal.fire({
+                title: 'Confirm Unsync from Evolution',
+                html: `This will revert reference changes in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This is a corrective action and should be used with caution. <br><br>Are you sure you want to proceed?`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, Unsync It!',
+                confirmButtonColor: '#ffc107'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                     fetch('/api/unsync_commission', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ companyId: parseInt(companyId) })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire('Success!', data.message, 'success');
+                        } else {
+                            Swal.fire('Error!', data.message, 'error');
+                        }
+                    });
+                }
+            });
+        });
+
         const batchStatementSelect = document.getElementById('batch-statement-select');
         const createBatchBtn = document.getElementById('create-batch-btn');
         const voidBatchBtn = document.getElementById('void-batch-btn');

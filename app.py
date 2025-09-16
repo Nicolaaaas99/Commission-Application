@@ -1,3 +1,5 @@
+# app.py
+
 import os
 import re
 from waitress import serve
@@ -44,6 +46,9 @@ CREATE_BATCH_CSV_SP = 'sp_CreateBatchCSV'
 GET_BROKER_REPORT_PERIODS_SP = 'sp_GetBrokerReportPeriods'
 GET_SPLIT_HISTORY_SP = 'sp_GetPolicySplitHistoryReport'
 VOID_BATCH_CSV_SP = 'sp_VoidBatchCSV'
+# --- NEW: Stored procedures for Sync/Unsync ---
+SYNC_TO_EVO_SP = 'sp_SyncCommissionToEvolution'
+UNSYNC_FROM_EVO_SP = 'sp_UnsyncCommissionFromEvolution'
 
 
 
@@ -100,7 +105,9 @@ def run_sp(sp_name, *params):
     except pyodbc.Error as e:
         logging.error(f"Error executing {sp_name}: {e}")
         conn.rollback()
-        raise Exception(f"Database error in {sp_name}: {e}")
+        # --- MODIFICATION: Raise a more specific error to catch in API routes ---
+        raise Exception(str(e))
+
 
 def run_sp_with_results(sp_name, *params):
     """A helper to execute a stored procedure and fetch the first result set."""
@@ -167,11 +174,17 @@ def index():
         flash(f"Error loading page: {str(e)}", 'error')
         return render_template('index.html', policies_needing_action=[], actions_pending=False)
 
-@app.route('/report')
-def report():
-    """Renders the broker commission report page."""
-    return render_template('report.html')
+# --- MODIFICATION: New consolidated report route ---
+@app.route('/reports')
+def reports():
+    """Renders the consolidated reports page."""
+    return render_template('reports.html')
 
+# --- REMOVED: Old separate report routes ---
+# @app.route('/report')
+# def report(): ...
+# @app.route('/split_report')
+# def split_report(): ...
 
 @app.route('/upload', methods=['POST'])
 def upload_file_route():
@@ -228,9 +241,6 @@ def upload_file_route():
         run_sp(PROCESS_IMPORT_SP, int(company_id), int(insurer_link), new_statement['StmntLink'], new_statement['StmntDate'], new_statement['StmntReference'])
         
         run_sp(CREATE_POLICY_SP)
-        #logging.info("Calling sp_RetrieveEvoCommissionSplits NOW...")
-        #run_sp(INSERT_EVOCOMM_SP)
-        #logging.info("Finished sp_RetrieveEvoCommissionSplits.")
         run_sp(INSERT_HIST_SP)
         run_sp(INSERT_HISTSPLIT_SP)
         
@@ -247,10 +257,6 @@ def upload_file_route():
             
     return redirect(url_for('index'))
 
-@app.route('/split_report')
-def split_report():
-    """Renders the split history report page."""
-    return render_template('split_report.html')
 
 # --- API Routes ---
 @app.route('/api/companies')
@@ -305,11 +311,16 @@ def get_report_brokers():
         logging.error(f"Error fetching report brokers: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
+# --- MODIFICATION: Updated split history report API with more filters ---
 @app.route('/api/split_history_report')
 def get_split_history_report():
-    """Fetches split history data based on a date range."""
+    """Fetches split history data based on a date range and other filters."""
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
+    company_id = request.args.get('company_id', 0, type=int)
+    broker_id = request.args.get('broker_id', 0, type=int)
+    compliance = request.args.get('compliance', 'All')
+    term = request.args.get('term', '')
 
     if not start_date or not end_date:
         return jsonify({"success": False, "message": "Start and end dates are required."}), 400
@@ -317,7 +328,9 @@ def get_split_history_report():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"EXEC {GET_SPLIT_HISTORY_SP} ?, ?", start_date, end_date)
+        # IMPORTANT: This assumes you will update the SP to accept these new parameters
+        cursor.execute(f"EXEC {GET_SPLIT_HISTORY_SP} ?, ?, ?, ?, ?, ?", 
+                       start_date, end_date, company_id, broker_id, compliance, term)
         columns = [column[0] for column in cursor.description]
         history_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(history_data)
@@ -347,7 +360,6 @@ def search_policies():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # Pass the new compliance parameter to the stored procedure
         cursor.execute("EXEC sp_SearchPoliciesAdvanced ?, ?, ?, ?, ?", company_id, insurer_id, broker_id, term, compliance_status) 
         columns = [column[0] for column in cursor.description]
         policies = [dict(zip(columns, row)) for row in cursor.fetchall()]
@@ -405,8 +417,8 @@ def bulk_save_splits():
     data = request.get_json()
     policy_ids = data.get('policyIds')
     splits = data.get('splits')
-    compliance = data.get('compliance')          # optional: 'Yes' or 'No'
-    insurance_type_id = data.get('insuranceTypeId')  # optional
+    compliance = data.get('compliance')
+    insurance_type_id = data.get('insuranceTypeId')
 
     if not policy_ids or not splits:
         return jsonify({"success": False, "message": "A list of policy IDs and splits is required."}), 400
@@ -416,15 +428,12 @@ def bulk_save_splits():
         cursor = conn.cursor()
 
         policy_ids_csv = ",".join(str(int(p)) for p in policy_ids)
-        # splits: list of {brokerId, percent} where percent is a 0..1 float
         split_parts = [f"{int(s['brokerId'])}:{float(s['percent']):.8f}" for s in splits]
         split_defs_csv = ",".join(split_parts)
 
-        # Call the new CSV wrapper stored-proc
         cursor.execute("EXEC dbo.sp_BulkApplyPolicySplits_CSV ?, ?, ?", policy_ids_csv, split_defs_csv, 'SystemBulk')
         conn.commit()
 
-        # If compliance or insurance type provided, apply per-policy (simple approach)
         if compliance in ('Yes','No') or insurance_type_id:
             for pid in policy_ids:
                 if compliance in ('Yes','No'):
@@ -433,7 +442,6 @@ def bulk_save_splits():
                     cursor.execute("EXEC sp_UpdatePolicyInsuranceType ?, ?", int(pid), int(insurance_type_id))
             conn.commit()
 
-        # create history splits
         cursor.execute("EXEC sp_InsertCommStmntHistSplit")
         conn.commit()
 
@@ -504,9 +512,7 @@ def execute_commission_run():
         return jsonify({"success": True, "message": f"Commission run for period {year_month} completed successfully."})
     except Exception as e:
         error_message = str(e)
-        # Check for our specific validation errors from the stored procedure
         if 'already been imported' in error_message or 'already been closed' in error_message:
-            # Extract the user-friendly message from the pyodbc error string
             friendly_message = error_message.split(']')[-1].strip()
             return jsonify({"success": False, "message": friendly_message}), 400
         
@@ -527,14 +533,41 @@ def cancel_commission_run():
         return jsonify({"success": True, "message": f"Commission run for period link {period_link} has been cancelled."})
     except Exception as e:
         error_message = str(e)
-        # Check for our specific validation errors from the stored procedure
         if 'already been imported' in error_message or 'cannot be cancelled' in error_message:
-            # Extract the user-friendly message from the pyodbc error string
             friendly_message = error_message.split(']')[-1].strip()
             return jsonify({"success": False, "message": friendly_message}), 400
 
         logging.error(f"Error cancelling commission run: {error_message}")
         return jsonify({"success": False, "message": "An unexpected database error occurred."}), 500
+
+# --- NEW: API routes for Sync/Unsync ---
+@app.route('/api/sync_commission', methods=['POST'])
+def sync_commission():
+    data = request.get_json()
+    company_id = data.get('companyId')
+    if not company_id:
+        return jsonify({"success": False, "message": "Company ID is required."}), 400
+    try:
+        run_sp(SYNC_TO_EVO_SP, int(company_id))
+        return jsonify({"success": True, "message": "Successfully synced latest commission period to Evolution."})
+    except Exception as e:
+        friendly_message = str(e).split(']')[-1].strip()
+        logging.error(f"Error syncing commission: {friendly_message}")
+        return jsonify({"success": False, "message": friendly_message}), 500
+
+@app.route('/api/unsync_commission', methods=['POST'])
+def unsync_commission():
+    data = request.get_json()
+    company_id = data.get('companyId')
+    if not company_id:
+        return jsonify({"success": False, "message": "Company ID is required."}), 400
+    try:
+        run_sp(UNSYNC_FROM_EVO_SP, int(company_id))
+        return jsonify({"success": True, "message": "Successfully unsynced latest commission period from Evolution."})
+    except Exception as e:
+        friendly_message = str(e).split(']')[-1].strip()
+        logging.error(f"Error unsyncing commission: {friendly_message}")
+        return jsonify({"success": False, "message": friendly_message}), 500
 
 
 @app.route('/api/broker_report/<int:broker_id>')
@@ -555,7 +588,6 @@ def get_broker_report(broker_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Pass the new period_id to the updated stored procedure
         cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, compliance_status, split_status, period_id)
         
         columns = [column[0] for column in cursor.description]
@@ -588,7 +620,6 @@ def get_unprocessed_statements():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # ADDED InsurerCodeName to the SELECT statement
         sql = """
             SELECT 
                 StmntLink, 
@@ -650,7 +681,6 @@ def create_batch():
 
         conn.commit()
 
-        # Force TaxType to have leading zeroes
         for row in batch_data:
             if "TaxType" in row and row["TaxType"] is not None:
                 row["TaxType"] = str(row["TaxType"]).zfill(2)
@@ -671,7 +701,6 @@ def create_batch():
         logging.error(f"Error creating batch for statement link {stmnt_link}: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- NEW: API Route to void an exported batch ---
 @app.route('/api/void_batch', methods=['POST'])
 def void_batch():
     """Voids a previously exported batch, allowing for re-export."""

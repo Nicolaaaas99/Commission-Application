@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Commission Reports</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { display: flex; min-height: 100vh; background-color: #f8f9fa; }
+        #sidebar { width: 280px; min-height: 100vh; background: #343a40; color: #fff; }
+        #sidebar .nav-link { color: #adb5bd; font-size: 1.1rem; padding: 0.75rem 1.5rem; border-left: 3px solid transparent; }
+        #sidebar .nav-link:hover { color: #fff; background: #495057; border-left-color: #0d6efd; }
+        #sidebar .nav-link.active { color: #fff; font-weight: bold; background: #0d6efd; border-left-color: #fff; }
+        #content { flex-grow: 1; padding: 2.5rem; }
+        .report-table th, .report-table td { text-align: right; vertical-align: middle; }
+        .report-table th:first-child, .report-table td:first-child { text-align: left; }
+        .report-table .mono { font-family: 'Courier New', Courier, monospace; }
+        .total-row { font-weight: bold; border-top: 2px solid #333; }
+        .subtotal-row { font-weight: bold; background-color: #e9ecef; }
+        .insurer-row { font-weight: 500; background-color: #f8f9fa; }
+        .clickable-row { cursor: pointer; }
+        .clickable-row:hover { background-color: #dee2e6; }
+        .detail-row td:first-child { padding-left: 4.5rem !important; }
+        .insurer-row td:first-child { padding-left: 2.5rem !important; }
+        .subtotal-row td:first-child { padding-left: 0.5rem !important; }
+        .toggle-icon { display: inline-block; }
+
+        @media print {
+            body { display: block; }
+            #sidebar, #report-controls, #report-actions .btn { display: none; }
+            #content { padding: 0; }
+            .card { box-shadow: none !important; border: 1px solid #ccc; }
+        }
+    </style>
+</head>
+<body>
+    <nav id="sidebar" class="d-flex flex-column flex-shrink-0 p-3">
+        <a href="/" class="d-flex align-items-center mb-3 mb-md-0 me-md-auto text-white text-decoration-none">
+            <i class="bi bi-calculator-fill me-2 fs-4"></i><span class="fs-4">Commission App</span>
+        </a>
+        <hr>
+        <ul class="nav nav-pills flex-column mb-auto">
+            <li class="nav-item"><a href="{{ url_for('index') }}" class="nav-link"><i class="bi bi-arrow-left-circle me-2"></i>Back to Main App</a></li>
+            <li><a href="#" class="nav-link active"><i class="bi bi-journal-text me-2"></i>Reports</a></li>
+        </ul>
+        <hr>
+    </nav>
+
+    <main id="content">
+        <h1 class="display-6 border-bottom pb-2 mb-4">Commission Reports</h1>
+
+        <ul class="nav nav-tabs" id="reportTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="broker-report-tab" data-bs-toggle="tab" data-bs-target="#broker-report-pane" type="button" role="tab" aria-controls="broker-report-pane" aria-selected="true">Broker Commission Report</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="split-history-tab" data-bs-toggle="tab" data-bs-target="#split-history-pane" type="button" role="tab" aria-controls="split-history-pane" aria-selected="false">Split History Report</button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="reportTabContent">
+
+            <div class="tab-pane fade show active" id="broker-report-pane" role="tabpanel" aria-labelledby="broker-report-tab" tabindex="0">
+                <div class="card shadow-sm mt-3">
+                    <div class="card-header"><h2 class="h4 mb-0">Report Filters</h2></div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-3">
+                                <label for="broker-company-select" class="form-label">Company:</label>
+                                <select id="broker-company-select" class="form-select">
+                                    <option value="" selected disabled>Loading companies...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="broker-period-select" class="form-label">Commission Period:</label>
+                                <select id="broker-period-select" class="form-select" disabled>
+                                    <option value="" selected disabled>Select a company</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="broker-select" class="form-label">Broker:</label>
+                                <select id="broker-select" class="form-select" disabled>
+                                    <option value="" selected disabled>Select company & period</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="broker-compliance-select" class="form-label">Compliance Status:</label>
+                                <select id="broker-compliance-select" class="form-select">
+                                    <option value="All" selected>All Policies</option>
+                                    <option value="Yes">Compliant Only</option>
+                                    <option value="No">Non-Compliant Only</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="broker-split-select" class="form-label">Split Status:</label>
+                                <select id="broker-split-select" class="form-select">
+                                    <option value="All" selected>All Policies</option>
+                                    <option value="Split">Split Only</option>
+                                    <option value="Non-Split">Non-Split Only</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <button class="btn btn-primary w-100" id="generate-broker-report-btn" disabled>
+                                    <i class="bi bi-file-earmark-text me-2"></i>Generate Report
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card shadow-sm mt-4">
+                    <div class="card-header">
+                         <div class="d-flex justify-content-between align-items-center">
+                            <h2 class="h4 mb-0">Report Results</h2>
+                            <div id="broker-report-actions" class="d-none">
+                                <button class="btn btn-sm btn-outline-secondary" id="print-btn" title="Print Report"><i class="bi bi-printer"></i></button>
+                                <button class="btn btn-sm btn-outline-success" id="excel-btn" title="Export to Excel"><i class="bi bi-file-earmark-spreadsheet"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <p class="text-center text-muted" id="broker-report-placeholder">Please select filters and click "Generate Report" to see the results.</p>
+                            <table id="broker-report-table" class="table table-hover report-table d-none">
+                                <thead>
+                                    <tr>
+                                        <th>Row Labels</th>
+                                        <th>Policy Holder</th>
+                                        <th>Split %</th>
+                                        <th>AmntExcl</th>
+                                        <th>CommAmntExcl</th>
+                                        <th>ResCommAmnt</th>
+                                        <th>CommPaidAmnt</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="broker-report-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="split-history-pane" role="tabpanel" aria-labelledby="split-history-tab" tabindex="0">
+                 <div class="card shadow-sm mt-3">
+                    <div class="card-header"><h2 class="h4 mb-0">Report Filters</h2></div>
+                    <div class="card-body">
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-3">
+                                <label for="split-start-date" class="form-label">Start Date:</label>
+                                <input type="date" id="split-start-date" class="form-control">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="split-end-date" class="form-label">End Date:</label>
+                                <input type="date" id="split-end-date" class="form-control">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="split-company-select" class="form-label">Company:</label>
+                                <select id="split-company-select" class="form-select">
+                                    <option value="0" selected>-- All Companies --</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="split-broker-select" class="form-label">Broker:</label>
+                                <select id="split-broker-select" class="form-select">
+                                    <option value="0" selected>-- All Brokers --</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="split-compliance-select" class="form-label">Compliance Status:</label>
+                                <select id="split-compliance-select" class="form-select">
+                                    <option value="All" selected>All Policies</option>
+                                    <option value="Yes">Compliant Only</option>
+                                    <option value="No">Non-Compliant Only</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row g-3 align-items-end">
+                             <div class="col-md-8">
+                                <label for="split-search-input" class="form-label">Search Policy Number or Holder:</label>
+                                <input type="text" id="split-search-input" class="form-control" placeholder="Filter results by text (optional)...">
+                            </div>
+                            <div class="col-md-4">
+                                <button class="btn btn-primary w-100" id="generate-split-report-btn">
+                                    <i class="bi bi-file-earmark-text me-2"></i>Generate Report
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card shadow-sm mt-4">
+                    <div class="card-header"><h2 class="h4 mb-0">Report Results</h2></div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <p class="text-center text-muted" id="split-report-placeholder">Please select a date range and click "Generate Report".</p>
+                            <table class="table table-hover d-none" id="split-report-table">
+                                <thead>
+                                    <tr>
+                                        <th>Policy Number</th>
+                                        <th>Policy Holder</th>
+                                        <th>Broker Name</th>
+                                        <th>Split %</th>
+                                        <th>User Name</th>
+                                        <th>Date Stamp</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="split-report-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // --- COMMON VARIABLES ---
+    const formatNumber = (num) => parseFloat(num).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const sanitize = (str) => String(str).replace(/[^a-zA-Z0-9]/g, '');
+
+    // ###########################################################
+    // ### BROKER COMMISSION REPORT LOGIC                      ###
+    // ###########################################################
+    const brokerCompanySelect = document.getElementById('broker-company-select');
+    const periodSelect = document.getElementById('broker-period-select');
+    const brokerSelect = document.getElementById('broker-select');
+    const complianceSelect = document.getElementById('broker-compliance-select');
+    const splitSelect = document.getElementById('broker-split-select');
+    const generateBtn = document.getElementById('generate-broker-report-btn');
+    const reportTable = document.getElementById('broker-report-table');
+    const reportBody = document.getElementById('broker-report-body');
+    const reportPlaceholder = document.getElementById('broker-report-placeholder');
+    const reportActions = document.getElementById('broker-report-actions');
+
+    fetch("/api/companies")
+        .then(res => res.json())
+        .then(companies => {
+            brokerCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            if (Array.isArray(companies)) {
+                companies.forEach(company => brokerCompanySelect.add(new Option(company.name, company.id)));
+            }
+        }).catch(error => Swal.fire('Error', 'Could not load companies.', 'error'));
+
+    brokerCompanySelect.addEventListener('change', function() {
+        const companyId = this.value;
+        periodSelect.disabled = true;
+        brokerSelect.disabled = true;
+        generateBtn.disabled = true;
+        periodSelect.innerHTML = '<option value="" selected disabled>Loading periods...</option>';
+        brokerSelect.innerHTML = '<option value="" selected disabled>Select company & period</option>';
+        if (!companyId) return;
+
+        Promise.all([
+            fetch(`/api/report_periods/${companyId}`).then(res => res.json()),
+            fetch("/api/brokers").then(res => res.json())
+        ]).then(([periods, brokers]) => {
+            periodSelect.innerHTML = '<option value="" selected disabled>-- Select a Period --</option>';
+            if (Array.isArray(periods)) {
+                periods.forEach(p => periodSelect.add(new Option(p.PeriodYearMonth, p.PeriodId)));
+                periodSelect.disabled = false;
+            }
+            brokerSelect.innerHTML = '<option value="0" selected>-- All Brokers --</option>';
+            if (Array.isArray(brokers)) {
+                brokers.forEach(broker => brokerSelect.add(new Option(broker.name, broker.id)));
+            }
+            brokerSelect.disabled = false;
+             generateBtn.disabled = false;
+        }).catch(error => Swal.fire('Error', 'Could not load periods or brokers.', 'error'));
+    });
+
+    generateBtn.addEventListener('click', function() {
+        const brokerId = brokerSelect.value;
+        const complianceStatus = complianceSelect.value;
+        const splitStatus = splitSelect.value;
+        const periodId = periodSelect.value;
+
+        if (!brokerId || !periodId) {
+            Swal.fire('Filter Missing', 'Please select a company, period, and broker.', 'warning');
+            return;
+        }
+
+        reportPlaceholder.textContent = 'Generating report...';
+        reportPlaceholder.classList.remove('d-none');
+        reportTable.classList.add('d-none');
+        reportActions.classList.add('d-none');
+        generateBtn.disabled = true;
+        generateBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
+
+        fetch(`/api/broker_report/${brokerId}?compliance=${complianceStatus}&split_status=${splitStatus}&period_id=${periodId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!Array.isArray(data)) throw new Error(data.message || 'Invalid data');
+                if (data.length === 0) {
+                    reportPlaceholder.textContent = 'No commission data found for the selected criteria.';
+                    return;
+                }
+                buildInteractiveReport(data);
+                reportPlaceholder.classList.add('d-none');
+                reportTable.classList.remove('d-none');
+                reportActions.classList.remove('d-none');
+            })
+            .catch(error => {
+                reportPlaceholder.textContent = `Error: ${error.message}`;
+                Swal.fire('Error!', `Could not generate the report. ${error.message}`, 'error');
+            })
+            .finally(() => {
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '<i class="bi bi-file-earmark-text me-2"></i>Generate Report';
+            });
+    });
+
+    function buildInteractiveReport(data) {
+        // This function remains largely the same
+        const groupedData = new Map();
+        const grandTotals = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+        const zeroTemplate = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+        const sumFields = Object.keys(grandTotals);
+
+        data.forEach(item => {
+            const type = item.PolicyInsuranceType;
+            const insurer = item.PolicyInsurerName;
+            const numericItem = { AmntExcl: parseFloat(item.AmntExcl), CommAmntExcl: parseFloat(item.CommAmntExcl), ResCommAmnt: parseFloat(item.ResCommAmnt), CommPaidAmnt: parseFloat(item.CommPaidAmnt) };
+            if (!groupedData.has(type)) groupedData.set(type, { totals: { ...zeroTemplate }, byInsurer: new Map() });
+            const typeGroup = groupedData.get(type);
+            if (!typeGroup.byInsurer.has(insurer)) typeGroup.byInsurer.set(insurer, { totals: { ...zeroTemplate }, policies: [] });
+            const insurerGroup = typeGroup.byInsurer.get(insurer);
+            sumFields.forEach(key => { grandTotals[key] += numericItem[key]; typeGroup.totals[key] += numericItem[key]; insurerGroup.totals[key] += numericItem[key]; });
+            insurerGroup.policies.push(item);
+        });
+
+        let html = '';
+        groupedData.forEach((typeData, type) => {
+            const typeId = sanitize(type);
+            html += renderRow(type, typeData.totals, `subtotal-row`, `group-${typeId}`);
+            typeData.byInsurer.forEach((insurerData, insurer) => {
+                const insurerId = sanitize(insurer);
+                html += renderRow(insurer, insurerData.totals, `insurer-row collapse group-${typeId}`, `group-${typeId}-${insurerId}`);
+                insurerData.policies.forEach(policy => {
+                    html += renderRow(policy.PolicyNumber, policy, `detail-row collapse group-${typeId}-${insurerId}`, null, { holder: policy.PolicyHolder, split: policy.PolicySplitPercent });
+                });
+            });
+        });
+
+        html += renderRow('Grand Total', grandTotals, 'total-row');
+        reportBody.innerHTML = html;
+        
+        // --- IMPROVED: Click handler for plus/minus toggle ---
+        document.querySelectorAll('.clickable-row').forEach(row => {
+            row.addEventListener('click', function() {
+                const icon = this.querySelector('.toggle-icon');
+                if (!icon) return;
+                
+                const isExpanded = this.getAttribute('aria-expanded') === 'true';
+                this.setAttribute('aria-expanded', !isExpanded);
+
+                if (!isExpanded) {
+                    icon.classList.remove('bi-plus-lg');
+                    icon.classList.add('bi-dash-lg');
+                } else {
+                    icon.classList.remove('bi-dash-lg');
+                    icon.classList.add('bi-plus-lg');
+                }
+            });
+        });
+    }
+
+    // --- IMPROVED: renderRow function with plus/minus icon ---
+    function renderRow(label, data, cssClass, target, details = { holder: '', split: '' }) {
+        const isClickable = !!target;
+        // Use a plus icon for expandable rows
+        const icon = isClickable ? '<i class="bi bi-plus-lg toggle-icon me-2"></i>' : '';
+        const clickableClass = isClickable ? 'clickable-row' : '';
+        const targetAttr = isClickable ? `data-bs-toggle="collapse" data-bs-target=".${target}" aria-expanded="false"` : '';
+        
+        return `
+            <tr class="${cssClass} ${clickableClass}" ${targetAttr}>
+                <td>${icon}${label}</td>
+                <td>${details.holder}</td>
+                <td class="mono">${details.split ? (details.split * 100).toFixed(2) + '%' : ''}</td>
+                <td class="mono">${formatNumber(data.AmntExcl)}</td>
+                <td class="mono">${formatNumber(data.CommAmntExcl)}</td>
+                <td class="mono">${formatNumber(data.ResCommAmnt)}</td>
+                <td class="mono">${formatNumber(data.CommPaidAmnt)}</td>
+            </tr>`;
+    }
+    
+    document.getElementById('print-btn').addEventListener('click', () => window.print());
+    document.getElementById('excel-btn').addEventListener('click', () => { /* Excel logic */ });
+
+
+    // ###########################################################
+    // ### SPLIT HISTORY REPORT LOGIC                          ###
+    // ###########################################################
+    const splitGenerateBtn = document.getElementById('generate-split-report-btn');
+    const splitReportTable = document.getElementById('split-report-table');
+    const splitReportBody = document.getElementById('split-report-body');
+    const splitReportPlaceholder = document.getElementById('split-report-placeholder');
+
+    const splitCompanySelect = document.getElementById('split-company-select');
+    const splitBrokerSelect = document.getElementById('split-broker-select');
+
+    // Set default dates
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    document.getElementById('split-start-date').valueAsDate = firstDayOfMonth;
+    document.getElementById('split-end-date').valueAsDate = today;
+
+    // Populate filter dropdowns
+    Promise.all([
+        fetch('/api/companies').then(res => res.json()),
+        fetch('/api/brokers').then(res => res.json())
+    ]).then(([companies, brokers]) => {
+        if (Array.isArray(companies)) {
+            companies.forEach(c => splitCompanySelect.add(new Option(c.name, c.id)));
+        }
+        if (Array.isArray(brokers)) {
+            brokers.forEach(b => splitBrokerSelect.add(new Option(b.name, b.id)));
+        }
+    }).catch(error => Swal.fire('Filter Error', 'Could not load filter options.', 'error'));
+
+
+    splitGenerateBtn.addEventListener('click', function() {
+        const startDate = document.getElementById('split-start-date').value;
+        const endDate = document.getElementById('split-end-date').value;
+        const companyId = document.getElementById('split-company-select').value;
+        const brokerId = document.getElementById('split-broker-select').value;
+        const compliance = document.getElementById('split-compliance-select').value;
+        const term = document.getElementById('split-search-input').value;
+
+        if (!startDate || !endDate) {
+            Swal.fire('Filter Missing', 'Please select both a start and end date.', 'warning');
+            return;
+        }
+
+        splitReportPlaceholder.textContent = 'Generating report...';
+        splitReportPlaceholder.classList.remove('d-none');
+        splitReportTable.classList.add('d-none');
+        splitGenerateBtn.disabled = true;
+        splitGenerateBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
+
+        const apiUrl = `/api/split_history_report?start_date=${startDate}&end_date=${endDate}&company_id=${companyId}&broker_id=${brokerId}&compliance=${compliance}&term=${encodeURIComponent(term)}`;
+
+        fetch(apiUrl)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success === false || !Array.isArray(data)) {
+                    throw new Error(data.message || 'Invalid data from server');
+                }
+                if (data.length === 0) {
+                    splitReportPlaceholder.textContent = 'No split history found for the selected criteria.';
+                    splitReportBody.innerHTML = '';
+                    return;
+                }
+
+                let html = '';
+                data.forEach(row => {
+                    const splitPercent = (parseFloat(row.SplitPercent) * 100).toFixed(2) + '%';
+                    const dateStamp = new Date(row.SplitDateStamp).toLocaleString('en-ZA');
+                    html += `
+                        <tr>
+                            <td>${row.PolicyNumber}</td>
+                            <td>${row.PolicyHolder}</td>
+                            <td>${row.BrokerName}</td>
+                            <td>${splitPercent}</td>
+                            <td>${row.SplitUserName}</td>
+                            <td>${dateStamp}</td>
+                        </tr>
+                    `;
+                });
+                splitReportBody.innerHTML = html;
+                splitReportPlaceholder.classList.add('d-none');
+                splitReportTable.classList.remove('d-none');
+            })
+            .catch(error => {
+                splitReportPlaceholder.textContent = `Error: ${error.message}`;
+                Swal.fire('Error!', `Could not generate the report. ${error.message}`, 'error');
+            })
+            .finally(() => {
+                splitGenerateBtn.disabled = false;
+                splitGenerateBtn.innerHTML = '<i class="bi bi-file-earmark-text me-2"></i>Generate Report';
+            });
+    });
+});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
