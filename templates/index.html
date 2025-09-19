@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Commission Processor</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" xintegrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
@@ -17,12 +17,13 @@
         #content { flex-grow: 1; padding: 2.5rem; }
         .page { display: none; }
         .page.active { display: block; }
-        .split-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .split-row { display: flex; align-items-center; gap: 10px; margin-bottom: 10px; }
         .split-row .form-select, .split-row .form-control { flex: 1; }
         .split-row .btn-danger { flex-shrink: 0; }
         .swal2-html-container { overflow: visible !important; }
-        .policy-row { cursor: pointer; }
+        .policy-row, .lapsed-policy-row { cursor: pointer; }
         #payment-checkbox-container { max-height: 200px; overflow-y: auto; }
+        .mono-font { font-family: 'Courier New', Courier, monospace; text-align: right; }
     </style>
 </head>
 <body>
@@ -51,6 +52,13 @@
                 <a href="#" class="nav-link {% if actions_pending %}disabled{% endif %}" data-page="batch-page"
                    title="{% if actions_pending %}Resolve pending actions to enable{% endif %}">
                    <i class="bi bi-file-earmark-spreadsheet me-2"></i>Create Batch
+                </a>
+            </li>
+            <!-- NEW Deferral Page Link -->
+             <li>
+                <a href="#" class="nav-link {% if actions_pending %}disabled{% endif %}" data-page="deferral-page" 
+                   title="{% if actions_pending %}Resolve pending actions to enable{% endif %}">
+                   <i class="bi bi-calendar-range me-2"></i>Lapse Deferral
                 </a>
             </li>
             <li>
@@ -240,6 +248,41 @@
             </div>
         </div>
 
+        <!-- NEW Deferral Page -->
+        <div id="deferral-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Create Policy Lapse Deferral Batch</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <p class="card-text">
+                        Select a company to find policies with unprocessed negative commission (lapses).
+                        Click on a policy to create a deferral, which will spread the negative amount over several future commission periods and generate a corresponding batch for your ERP system.
+                    </p>
+                    
+                    <div class="mb-3">
+                        <label for="deferral-company-select" class="form-label">Company:</label>
+                        <select id="deferral-company-select" class="form-select">
+                            <option value="" selected disabled>-- Select a Company --</option>
+                        </select>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-hover" id="lapsed-policies-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Policy Number</th>
+                                    <th>Policy Holder</th>
+                                    <th class="text-end">Total Unprocessed Lapse Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody id="lapsed-policies-body">
+                                <tr><td colspan="3" class="text-center text-muted p-3">Select a company to see policies eligible for deferral.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="run-page" class="page">
             <h1 class="display-6 border-bottom pb-2 mb-4">Commission Run</h1>
             <div class="card shadow-sm">
@@ -276,7 +319,7 @@
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" xintegrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function () {
         
@@ -287,6 +330,8 @@
         const paymentContainer = document.getElementById('payment-checkbox-container');
         const searchInput = document.getElementById('search-input');
         const searchResultsBody = document.getElementById('search-results-body');
+        const deferralCompanySelect = document.getElementById('deferral-company-select');
+        const lapsedPoliciesBody = document.getElementById('lapsed-policies-body');
 
         const actionPoliciesBody = document.getElementById('action-policies-body');
         if (actionPoliciesBody) {
@@ -355,17 +400,32 @@
         const editInsurerSelect = document.getElementById('edit-insurer-select');
         const editBrokerSelect = document.getElementById('edit-broker-select');
 
-        fetch('/api/companies')
-            .then(res => res.json())
-            .then(companyData => {
-                editCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
-                if (Array.isArray(companyData)) {
-                    companyData.forEach(company => {
-                        editCompanySelect.add(new Option(company.name, company.id));
-                    });
-                }
-            });
+        Promise.all([
+            fetch("{{ url_for('get_brokers') }}").then(res => res.json()),
+            fetch("{{ url_for('get_insurance_types') }}").then(res => res.json()),
+            fetch('/api/companies').then(res => res.json())
+        ]).then(([brokerData, typeData, companyData]) => {
+            brokers = brokerData;
+            insuranceTypes = typeData;
+            
+            companySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            runCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            editCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
+            deferralCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
 
+            if (Array.isArray(companyData)) {
+                companyData.forEach(company => {
+                    companySelect.add(new Option(company.name, company.id));
+                    runCompanySelect.add(new Option(company.name, company.id));
+                    editCompanySelect.add(new Option(company.name, company.id));
+                    deferralCompanySelect.add(new Option(company.name, company.id));
+                });
+            }
+        }).catch(error => {
+            console.error("Failed to load initial data:", error);
+            Swal.fire('Initialization Error', 'Could not load required data. Please refresh the page.', 'error');
+        });
+        
         editCompanySelect.addEventListener('change', function() {
             const companyId = this.value;
             editInsurerSelect.innerHTML = '<option value="0" selected>-- All Insurers --</option>';
@@ -389,27 +449,6 @@
                 }
                 editBrokerSelect.disabled = false;
             });
-        });
-
-        Promise.all([
-            fetch("{{ url_for('get_brokers') }}").then(res => res.json()),
-            fetch("{{ url_for('get_insurance_types') }}").then(res => res.json()),
-            fetch('/api/companies').then(res => res.json())
-        ]).then(([brokerData, typeData, companyData]) => {
-            brokers = brokerData;
-            insuranceTypes = typeData;
-            
-            companySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
-            runCompanySelect.innerHTML = '<option value="" selected disabled>-- Select a Company --</option>';
-            if (Array.isArray(companyData)) {
-                companyData.forEach(company => {
-                    companySelect.add(new Option(company.name, company.id));
-                    runCompanySelect.add(new Option(company.name, company.id));
-                });
-            }
-        }).catch(error => {
-            console.error("Failed to load initial data:", error);
-            Swal.fire('Initialization Error', 'Could not load required data. Please refresh the page.', 'error');
         });
 
         const resetPaymentContainer = (text) => {
@@ -938,7 +977,7 @@
                             const date = new Date(s.StmntDate).toLocaleDateString('en-CA');
                             const amount = parseFloat(s.StmntTotalAmount).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
                             const text = `${date} | ${s.InsurerCodeName} | ${s.StmntReference} | ${amount}`;
-                            const option = new Option(text, s.stmntLink);
+                            const option = new Option(text, s.StmntLink);
                             option.dataset.companyId = s.StmntCompanyId;
                             option.dataset.insurerId = s.StmntInsurerLink;
                             option.dataset.reference = s.StmntReference;
@@ -972,10 +1011,8 @@
                 companyId: selectedOption.dataset.companyId,
                 insurerId: selectedOption.dataset.insurerId
             };
-
-            createBatchBtn.disabled = true;
-            createBatchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
-
+            
+            Swal.fire({ title: 'Creating Batch...', didOpen: () => Swal.showLoading() });
             fetch('/api/create_batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -990,7 +1027,6 @@
                     link.setAttribute("href", url);
                     const filename = `SageBatch_${selectedOption.dataset.reference}.csv`;
                     link.setAttribute("download", filename);
-                    link.style.visibility = 'hidden';
                     document.body.appendChild(link);
                     link.click();
                     document.body.removeChild(link);
@@ -999,15 +1035,10 @@
                 } else {
                     Swal.fire('Error!', data.message, 'error');
                 }
-            })
-            .catch(error => Swal.fire('Error!', `An unexpected error occurred: ${error}`, 'error'))
-            .finally(() => {
-                createBatchBtn.disabled = false;
-                createBatchBtn.innerHTML = '<i class="bi bi-download me-2"></i>Create and Download Batch';
             });
         });
 
-        voidBatchBtn.addEventListener('click', function() {
+         voidBatchBtn.addEventListener('click', function() {
             const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
             if (!selectedOption || !selectedOption.value) {
                 Swal.fire('Missing Information', 'Please select a statement.', 'warning');
@@ -1050,6 +1081,104 @@
                     .finally(() => {
                         voidBatchBtn.disabled = false;
                         voidBatchBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch';
+                    });
+                }
+            });
+        });
+
+        // --- NEW Deferral Page Logic ---
+        deferralCompanySelect.addEventListener('change', function() {
+            const companyId = this.value;
+            lapsedPoliciesBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted p-3">Loading policies...</td></tr>`;
+
+            if (!companyId) {
+                lapsedPoliciesBody.innerHTML = `<tr><td colspan="3" class="text-center text-muted p-3">Select a company to see policies eligible for deferral.</td></tr>`;
+                return;
+            }
+
+            fetch(`/api/lapsed_policies/${companyId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success === false || !Array.isArray(data)) {
+                        throw new Error(data.message || 'Could not load lapsed policies.');
+                    }
+                    if (data.length === 0) {
+                        lapsedPoliciesBody.innerHTML = `<tr><td colspan="3" class="text-center text-success p-3"><i class="bi bi-check-circle-fill me-2"></i>No policies with unprocessed lapses found for this company.</td></tr>`;
+                        return;
+                    }
+                    lapsedPoliciesBody.innerHTML = data.map(policy => `
+                        <tr class="lapsed-policy-row" data-policy-link="${policy.PolicyLink}" data-policy-number="${policy.PolicyNumber}" data-policy-holder="${policy.PolicyHolder}" data-total-lapse="${policy.TotalLapseAmount}">
+                            <td>${policy.PolicyNumber}</td>
+                            <td>${policy.PolicyHolder}</td>
+                            <td class="mono-font text-danger">${parseFloat(policy.TotalLapseAmount).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' })}</td>
+                        </tr>
+                    `).join('');
+                })
+                .catch(error => {
+                    lapsedPoliciesBody.innerHTML = `<tr><td colspan="3" class="text-center text-danger p-3">Error: ${error.message}</td></tr>`;
+                });
+        });
+
+        document.getElementById('lapsed-policies-table').addEventListener('click', function(event) {
+            const policyRow = event.target.closest('.lapsed-policy-row');
+            if (!policyRow) return;
+
+            const { policyLink, policyNumber, policyHolder, totalLapse } = policyRow.dataset;
+            const formattedAmount = parseFloat(totalLapse).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
+
+            Swal.fire({
+                title: `Defer Lapse for ${policyNumber}`,
+                html: `
+                    <p class="text-start"><strong>Holder:</strong> ${policyHolder}</p>
+                    <p class="text-start"><strong>Total Lapse Amount:</strong> <span class="text-danger fw-bold">${formattedAmount}</span></p>
+                    <label for="swal-input-periods" class="form-label mt-2">Enter number of future periods to spread this amount over:</label>
+                    <input id="swal-input-periods" class="swal2-input" type="number" min="2" max="24" placeholder="e.g., 12">
+                `,
+                confirmButtonText: 'Create Deferral & Download Batch',
+                showCancelButton: true,
+                preConfirm: () => {
+                    const numPeriods = document.getElementById('swal-input-periods').value;
+                    if (!numPeriods || parseInt(numPeriods, 10) < 2) {
+                        Swal.showValidationMessage('Please enter a number of periods (minimum 2).');
+                        return false;
+                    }
+                    return parseInt(numPeriods, 10);
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const numPeriods = result.value;
+                    const payload = { policyLink, numPeriods };
+                    
+                    Swal.fire({ title: 'Processing Deferral...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+
+                    fetch('/api/create_deferral_batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
+                            const link = document.createElement("a");
+                            const url = URL.createObjectURL(blob);
+                            link.setAttribute("href", url);
+                            const filename = `DeferralBatch_${policyNumber}.csv`;
+                            link.setAttribute("download", filename);
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            Swal.fire({
+                                title: 'Success!', 
+                                text: `Deferral created and batch file ${filename} has been downloaded.`, 
+                                icon: 'success'
+                            }).then(() => {
+                                // Refresh the list of lapsed policies
+                                deferralCompanySelect.dispatchEvent(new Event('change'));
+                            });
+                        } else {
+                            Swal.fire('Error!', data.message, 'error');
+                        }
                     });
                 }
             });

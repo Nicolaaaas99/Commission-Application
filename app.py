@@ -46,9 +46,11 @@ CREATE_BATCH_CSV_SP = 'sp_CreateBatchCSV'
 GET_BROKER_REPORT_PERIODS_SP = 'sp_GetBrokerReportPeriods'
 GET_SPLIT_HISTORY_SP = 'sp_GetPolicySplitHistoryReport'
 VOID_BATCH_CSV_SP = 'sp_VoidBatchCSV'
-# --- NEW: Stored procedures for Sync/Unsync ---
 SYNC_TO_EVO_SP = 'sp_SyncCommissionToEvolution'
 UNSYNC_FROM_EVO_SP = 'sp_UnsyncCommissionFromEvolution'
+# --- NEW: Stored procedures for Deferral Feature ---
+GET_LAPSED_POLICIES_SP = 'sp_GetLapsedPolicies'
+CREATE_DEFERRAL_SP = 'sp_CreateDeferralBatchCSV'
 
 
 
@@ -105,7 +107,6 @@ def run_sp(sp_name, *params):
     except pyodbc.Error as e:
         logging.error(f"Error executing {sp_name}: {e}")
         conn.rollback()
-        # --- MODIFICATION: Raise a more specific error to catch in API routes ---
         raise Exception(str(e))
 
 
@@ -174,17 +175,10 @@ def index():
         flash(f"Error loading page: {str(e)}", 'error')
         return render_template('index.html', policies_needing_action=[], actions_pending=False)
 
-# --- MODIFICATION: New consolidated report route ---
 @app.route('/reports')
 def reports():
     """Renders the consolidated reports page."""
     return render_template('reports.html')
-
-# --- REMOVED: Old separate report routes ---
-# @app.route('/report')
-# def report(): ...
-# @app.route('/split_report')
-# def split_report(): ...
 
 @app.route('/upload', methods=['POST'])
 def upload_file_route():
@@ -311,7 +305,6 @@ def get_report_brokers():
         logging.error(f"Error fetching report brokers: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- MODIFICATION: Updated split history report API with more filters ---
 @app.route('/api/split_history_report')
 def get_split_history_report():
     """Fetches split history data based on a date range and other filters."""
@@ -328,7 +321,6 @@ def get_split_history_report():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        # IMPORTANT: This assumes you will update the SP to accept these new parameters
         cursor.execute(f"EXEC {GET_SPLIT_HISTORY_SP} ?, ?, ?, ?, ?, ?", 
                        start_date, end_date, company_id, broker_id, compliance, term)
         columns = [column[0] for column in cursor.description]
@@ -512,12 +504,8 @@ def execute_commission_run():
         return jsonify({"success": True, "message": f"Commission run for period {year_month} completed successfully."})
     except Exception as e:
         error_message = str(e)
-        if 'already been imported' in error_message or 'already been closed' in error_message:
-            friendly_message = error_message.split(']')[-1].strip()
-            return jsonify({"success": False, "message": friendly_message}), 400
-        
-        logging.error(f"Error executing commission run: {error_message}")
-        return jsonify({"success": False, "message": "An unexpected database error occurred."}), 500
+        friendly_message = error_message.split(']')[-1].strip()
+        return jsonify({"success": False, "message": friendly_message}), 500
 
 @app.route('/api/cancel_commission_run', methods=['POST'])
 def cancel_commission_run():
@@ -533,14 +521,9 @@ def cancel_commission_run():
         return jsonify({"success": True, "message": f"Commission run for period link {period_link} has been cancelled."})
     except Exception as e:
         error_message = str(e)
-        if 'already been imported' in error_message or 'cannot be cancelled' in error_message:
-            friendly_message = error_message.split(']')[-1].strip()
-            return jsonify({"success": False, "message": friendly_message}), 400
+        friendly_message = error_message.split(']')[-1].strip()
+        return jsonify({"success": False, "message": friendly_message}), 500
 
-        logging.error(f"Error cancelling commission run: {error_message}")
-        return jsonify({"success": False, "message": "An unexpected database error occurred."}), 500
-
-# --- NEW: API routes for Sync/Unsync ---
 @app.route('/api/sync_commission', methods=['POST'])
 def sync_commission():
     data = request.get_json()
@@ -576,24 +559,17 @@ def get_broker_report(broker_id):
     split_status = request.args.get('split_status', 'All')
     period_id = request.args.get('period_id', 0, type=int) 
 
-    if broker_id is None:
-        return jsonify({"success": False, "message": "Broker ID is required."}), 400
-        
-    if compliance_status not in ['Yes', 'No', 'All']:
-        return jsonify({"success": False, "message": "Invalid compliance status."}), 400
-    if split_status not in ['Split', 'Non-Split', 'All']:
-        return jsonify({"success": False, "message": "Invalid split status."}), 400
+    if broker_id is None: return jsonify({"success": False, "message": "Broker ID is required."}), 400
+    if compliance_status not in ['Yes', 'No', 'All']: return jsonify({"success": False, "message": "Invalid compliance status."}), 400
+    if split_status not in ['Split', 'Non-Split', 'All']: return jsonify({"success": False, "message": "Invalid split status."}), 400
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, compliance_status, split_status, period_id)
-        
         columns = [column[0] for column in cursor.description]
         report_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(report_data)
-        
     except Exception as e:
         logging.error(f"Error fetching broker report for ID {broker_id}: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -612,39 +588,20 @@ def get_report_periods(company_id):
         logging.error(f"Error fetching report periods: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-# --- API Routes for Batch Creation (Corrected) ---
-
 @app.route('/api/unprocessed_statements')
 def get_unprocessed_statements():
     """Fetches statements that have not been processed in Evolution."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        sql = """
-            SELECT 
-                StmntLink, 
-                StmntCompanyId, 
-                StmntInsurerLink, 
-                InsurerCodeName,
-                StmntDate, 
-                StmntReference, 
-                StmntTotalAmount 
-            FROM dbo._uvUnprocessedStatements 
-            ORDER BY StmntDate ASC
-        """
+        sql = "SELECT StmntLink, StmntCompanyId, StmntInsurerLink, InsurerCodeName, StmntDate, StmntReference, StmntTotalAmount FROM dbo._uvUnprocessedStatements ORDER BY StmntDate ASC"
         cursor.execute(sql)
         columns = [column[0] for column in cursor.description]
-        statements = []
-        for row in cursor.fetchall():
-            row_dict = dict(zip(columns, row))
-            row_dict['stmntLink'] = row_dict.pop('StmntLink')
-            statements.append(row_dict)
-            
+        statements = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(statements)
     except Exception as e:
         logging.error(f"Error fetching unprocessed statements: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
-    
 
 @app.route('/api/create_batch', methods=['POST'])
 def create_batch():
@@ -660,42 +617,23 @@ def create_batch():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(1)
-            FROM CommStmntHistSplit
-            WHERE HistSplitStmntId = ?
-              AND HistSplitBatchExported = 1
-        """, stmnt_link)
-        already_exported = cursor.fetchone()[0]
-
-        if already_exported > 0:
-            return jsonify({
-                "success": False,
-                "message": "This statement has already been exported and cannot be downloaded again."
-            }), 400
+        cursor.execute("SELECT COUNT(1) FROM CommStmntHistSplit WHERE HistSplitStmntId = ? AND HistSplitBatchExported = 1", stmnt_link)
+        if cursor.fetchone()[0] > 0:
+            return jsonify({"success": False, "message": "This statement has already been exported."}), 400
         
         cursor.execute(f"EXEC {CREATE_BATCH_CSV_SP} ?, ?, ?", int(company_id), int(insurer_id), int(stmnt_link))
-        
         columns = [column[0] for column in cursor.description]
         batch_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
         conn.commit()
 
-        for row in batch_data:
-            if "TaxType" in row and row["TaxType"] is not None:
-                row["TaxType"] = str(row["TaxType"]).zfill(2)
-
         if not batch_data:
-             return jsonify({"success": False, "message": "No data found to create a batch for the selected statement."}), 404
+             return jsonify({"success": False, "message": "No data found to create a batch."}), 404
 
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=columns)
         writer.writeheader()
         writer.writerows(batch_data)
-        
-        csv_string = output.getvalue()
-        
-        return jsonify({"success": True, "csv_data": csv_string})
+        return jsonify({"success": True, "csv_data": output.getvalue()})
 
     except Exception as e:
         logging.error(f"Error creating batch for statement link {stmnt_link}: {e}")
@@ -714,10 +652,63 @@ def void_batch():
 
     try:
         run_sp(VOID_BATCH_CSV_SP, int(company_id), int(insurer_id), int(stmnt_link))
-        return jsonify({"success": True, "message": "The batch has been successfully voided and can be processed again."})
+        return jsonify({"success": True, "message": "The batch has been successfully voided."})
     except Exception as e:
         logging.error(f"Error voiding batch for statement link {stmnt_link}: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
+# --- NEW Deferral Feature API Endpoints ---
+
+@app.route('/api/lapsed_policies/<int:company_id>')
+def get_lapsed_policies(company_id):
+    """Fetches policies with unprocessed negative commissions for a given company."""
+    if not company_id:
+        return jsonify({"success": False, "message": "Company ID is required."}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {GET_LAPSED_POLICIES_SP} ?", company_id)
+        columns = [column[0] for column in cursor.description]
+        policies = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(policies)
+    except Exception as e:
+        logging.error(f"Error fetching lapsed policies: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/create_deferral_batch', methods=['POST'])
+def create_deferral_batch():
+    """Creates deferral transactions and returns a CSV batch file."""
+    data = request.get_json()
+    policy_link = data.get('policyLink')
+    num_periods = data.get('numPeriods')
+    user_name = 'WebAppUser' # Can be replaced with actual user session later
+
+    if not all([policy_link, num_periods]):
+        return jsonify({"success": False, "message": "Policy Link and Number of Periods are required."}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {CREATE_DEFERRAL_SP} ?, ?, ?", int(policy_link), int(num_periods), user_name)
+        
+        columns = [column[0] for column in cursor.description]
+        batch_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.commit()
+
+        if not batch_data:
+             return jsonify({"success": False, "message": "No data returned from deferral process. The policy might not have had any negative commission to defer."}), 404
+
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(batch_data)
+        
+        return jsonify({"success": True, "csv_data": output.getvalue()})
+
+    except Exception as e:
+        friendly_message = str(e).split(']')[-1].strip()
+        logging.error(f"Error creating deferral for policy link {policy_link}: {friendly_message}")
+        return jsonify({"success": False, "message": friendly_message}), 500
 
 
 if __name__ == '__main__':
