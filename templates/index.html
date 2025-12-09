@@ -38,6 +38,11 @@
                 <a href="#" class="nav-link active" data-page="upload-page"><i class="bi bi-cloud-upload me-2"></i>Upload Statement</a>
             </li>
             <li>
+                <a href="#" class="nav-link" data-page="manage-statements-page">
+                    <i class="bi bi-trash me-2"></i>Manage Statements
+                </a>
+            </li>
+            <li>
                 <a href="#" class="nav-link" data-page="actions-page">
                     <i class="bi bi-exclamation-triangle me-2"></i>Policies Requiring Action
                     {% if policies_needing_action %}
@@ -47,6 +52,9 @@
             </li>
             <li>
                 <a href="#" class="nav-link" data-page="edit-page"><i class="bi bi-pencil-square me-2"></i>Edit Policy</a>
+            </li>
+            <li>
+                <a href="#" class="nav-link" data-page="correction-page"><i class="bi bi-bandaid me-2"></i>Split Correction</a>
             </li>
             <li>
                 <a href="#" class="nav-link {% if actions_pending %}disabled{% endif %}" data-page="batch-page"
@@ -113,12 +121,66 @@
                             <label for="file" class="form-label">Commission File (CSV or XLSX):</label>
                             <input type="file" id="file" name="file" class="form-control" accept=".csv,.xlsx" required>
                         </div>
-                        <button type="submit" class="btn btn-primary btn-lg"><i class="bi bi-check2-circle me-2"></i>Upload and Process</button>
+                        <button type="button" class="btn btn-primary btn-lg" onclick="showUploadLoading(this);"><i class="bi bi-check2-circle me-2"></i>Upload and Process</button>
                     </form>
                 </div>
             </div>
         </div>
-        
+
+        <div id="manage-statements-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Reverse Uploaded Statements</h1>
+            
+            <div class="alert alert-warning mb-4">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                <strong>Warning:</strong> This action deletes the statement and all related records permanently.
+            </div>
+            
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-4">
+                            <label for="manage-company-select" class="form-label">Company:</label>
+                            <select id="manage-company-select" class="form-select">
+                                <option value="0" selected>-- Select Company --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="statement-search-input" class="form-label">Statement Reference:</label>
+                            <div class="input-group">
+                                <input type="text" id="statement-search-input" class="form-control" 
+                                    placeholder="Enter statement reference or part of it...">
+                                <button class="btn btn-primary" id="search-statements-btn" disabled>
+                                    <i class="bi bi-search me-2"></i>Search
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="table-responsive">
+                        <table class="table table-hover" id="statements-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Reference</th>
+                                    <th>Date</th>
+                                    <th>Company</th>
+                                    <th>Insurer</th>
+                                    <th class="text-end">Amount</th>
+                                    <th class="text-center">Status</th>
+                                    <th class="text-center">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="statements-body">
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted p-3">
+                                        Select a company and search for statements
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>        
         <div id="actions-page" class="page">
             <h1 class="display-6 border-bottom pb-2 mb-4">Policies Requiring Action</h1>
             <div class="card shadow-sm">
@@ -218,6 +280,63 @@
                                 <tr><td colspan="5" class="text-center text-muted p-3">Select filters and click search to see results.</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="correction-page" class="page">
+            <h1 class="display-6 border-bottom pb-2 mb-4">Split Correction Batch</h1>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="alert alert-warning mb-4">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        <strong>Process:</strong> 
+                        1. Edit the policy to have the correct splits. 
+                        2. Search for the policy here. 
+                        3. Tick the past statements to correct. 
+                        4. Click "Create Correction Batch". 
+                        (The batch date will be Today).
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <select id="correction-company-select" class="form-select">
+                                <option value="" selected disabled>-- Select Company --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="input-group">
+                                <input type="text" id="correction-search-input" class="form-control" placeholder="Search Policy Number or Holder...">
+                                <button class="btn btn-primary" id="correction-search-btn"><i class="bi bi-search"></i> Search</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="correction-policy-list" class="list-group mb-4"></div>
+
+                    <div id="correction-history-wrapper" class="d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 id="correction-policy-title">History</h5>
+                            <button class="btn btn-success" id="create-correction-batch-btn" disabled>
+                                <i class="bi bi-file-earmark-spreadsheet me-2"></i>Create Correction Batch
+                            </button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover table-bordered">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th class="text-center" style="width: 50px;">Select</th>
+                                        <th>Reference</th>
+                                        <th>Statement Date</th>
+                                        <th>Period</th>
+                                        <th>Split Details</th>
+                                        <th class="text-end">Original Total (Incl)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="correction-history-body"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1184,6 +1303,486 @@
             });
         });
     });
+    // --- CORRECTION PAGE LOGIC ---
+    const corrCompanySelect = document.getElementById('correction-company-select');
+    const corrSearchBtn = document.getElementById('correction-search-btn');
+    const corrSearchInput = document.getElementById('correction-search-input');
+    const corrList = document.getElementById('correction-policy-list');
+    const corrWrapper = document.getElementById('correction-history-wrapper');
+    const corrBody = document.getElementById('correction-history-body');
+    const createCorrBatchBtn = document.getElementById('create-correction-batch-btn');
+    
+    let selectedPolicyLink = null;
+
+    // Load Companies (Reuse existing API)
+    fetch('/api/companies').then(r => r.json()).then(data => {
+        if(Array.isArray(data)) data.forEach(c => corrCompanySelect.add(new Option(c.name, c.id)));
+    });
+
+    // 1. Search Logic
+    corrSearchBtn.addEventListener('click', () => {
+        const compId = corrCompanySelect.value;
+        const term = corrSearchInput.value.trim();
+        if(!compId) return Swal.fire('Error', 'Select a company first', 'error');
+
+        corrList.innerHTML = '<div class="text-center p-3">Searching...</div>';
+        corrWrapper.classList.add('d-none');
+        
+        fetch(`/api/search_policies?company_id=${compId}&term=${encodeURIComponent(term)}`)
+            .then(r => r.json())
+            .then(data => {
+                corrList.innerHTML = '';
+                if(!data || data.length === 0) {
+                    corrList.innerHTML = '<div class="alert alert-secondary">No policies found.</div>';
+                    return;
+                }
+                data.slice(0, 10).forEach(p => {
+                    const item = document.createElement('button');
+                    item.className = 'list-group-item list-group-item-action';
+                    item.innerHTML = `<strong>${p.PolicyNumber}</strong> - ${p.PolicyHolder} (${p.PolicyInsurerName})`;
+                    item.onclick = () => loadCorrHistory(p);
+                    corrList.appendChild(item);
+                });
+            });
+    });
+
+    // 2. Load History Logic
+    function loadCorrHistory(policy) {
+        selectedPolicyLink = policy.PolicyLink;
+        document.getElementById('correction-policy-title').innerText = `History for: ${policy.PolicyNumber} - ${policy.PolicyHolder}`;
+        corrWrapper.classList.remove('d-none');
+        corrBody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
+        createCorrBatchBtn.disabled = true;
+
+        // Visual feedback on list
+        document.querySelectorAll('#correction-policy-list button').forEach(b => b.classList.remove('active'));
+        event.target.closest('button').classList.add('active');
+
+        fetch(`/api/correction_history/${policy.PolicyLink}`)
+            .then(r => r.json())
+            .then(data => {
+                corrBody.innerHTML = '';
+                if(data.length === 0) {
+                    corrBody.innerHTML = '<tr><td colspan="6" class="text-center">No split history found for this policy.</td></tr>';
+                    return;
+                }
+                
+                data.forEach(row => {
+                    const amt = parseFloat(row.TotalCommIncl).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
+                    // format date cleanly
+                    const dateObj = new Date(row.StmntDate);
+                    const dateStr = !isNaN(dateObj) ? dateObj.toLocaleDateString('en-ZA') : row.StmntDate;
+                    
+                    // Prepare split details display - SHOW DIRECTLY IN COLUMN
+                    let splitDetailsHtml = '';
+                    if (row.SplitDetails && row.SplitDetails !== 'No splits found') {
+                        // Show split details directly with line breaks for readability
+                        const splitDetailsText = row.SplitDetails.replace(/, /g, '<br>');
+                        splitDetailsHtml = `
+                            <div class="split-details-container">
+                                <small class="text-muted d-block">
+                                    ${splitDetailsText}
+                                </small>
+                            </div>
+                        `;
+                    } else {
+                        splitDetailsHtml = '<small class="text-muted">No split data</small>';
+                    }
+
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td class="text-center">
+                            <input type="checkbox" class="form-check-input corr-check" 
+                                value="${row.HistSplitStmntId}" 
+                                data-period="${row.HistSplitCommPeriodLink}">
+                        </td>
+                        <td><strong>${row.HistSplitStmntReference}</strong></td>
+                        <td>${dateStr}</td>
+                        <td>${row.PeriodYearMonth || ''}</td>
+                        <td class="split-details-cell">${splitDetailsHtml}</td>
+                        <td class="text-end mono-font fw-bold">${amt}</td>
+                    `;
+                    corrBody.appendChild(tr);
+                });
+
+                // Enable button only if checkboxes are checked
+                const checkboxes = document.querySelectorAll('.corr-check');
+                checkboxes.forEach(cb => {
+                    cb.addEventListener('change', () => {
+                        const anyChecked = Array.from(checkboxes).some(c => c.checked);
+                        createCorrBatchBtn.disabled = !anyChecked;
+                    });
+                });
+            })
+            .catch(error => {
+                console.error('Error loading correction history:', error);
+                corrBody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="text-center text-danger p-3">
+                            Error loading history: ${error.message}
+                        </td>
+                    </tr>
+                `;
+            });
+    }
+
+    // 3. Create Batch Logic
+    createCorrBatchBtn.addEventListener('click', () => {
+        const checked = document.querySelectorAll('.corr-check:checked');
+        const transactions = Array.from(checked).map(cb => ({
+            stmntId: cb.value,
+            periodLink: cb.getAttribute('data-period')
+        }));
+
+        Swal.fire({
+            title: 'Create Batch?',
+            text: `This will correct ${transactions.length} selected transaction(s) using the CURRENT policy split settings and download a CSV with Today's Date.`,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, Create Batch',
+            confirmButtonColor: '#198754'
+        }).then((result) => {
+            if(result.isConfirmed) {
+                Swal.fire({ title: 'Processing...', didOpen: () => Swal.showLoading() });
+                
+                fetch('/api/process_split_correction', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        policyLink: selectedPolicyLink,
+                        transactions: transactions
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if(data.success) {
+                        // Download File
+                        const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
+                        const link = document.createElement("a");
+                        const url = URL.createObjectURL(blob);
+                        link.setAttribute("href", url);
+                        link.setAttribute("download", `CorrectionBatch_${selectedPolicyLink}.csv`);
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        
+                        Swal.fire('Success', 'Batch downloaded successfully', 'success')
+                            .then(() => corrSearchBtn.click()); // Refresh to clear
+                    } else {
+                        Swal.fire('Error', data.message, 'error');
+                    }
+                });
+            }
+        });
+    });
+        // --- SIMPLIFIED STATEMENTS SEARCH LOGIC ---
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load companies for the manage statements dropdown
+            fetch('/api/companies')
+                .then(r => r.json())
+                .then(data => {
+                    const select = document.getElementById('manage-company-select');
+                    if (select && Array.isArray(data)) {
+                        select.innerHTML = '<option value="0" selected>-- Select Company --</option>';
+                        data.forEach(c => select.add(new Option(c.name, c.id)));
+                    }
+                });
+
+            // Enable search button when company is selected
+            const companySelect = document.getElementById('manage-company-select');
+            const searchBtn = document.getElementById('search-statements-btn');
+            const searchInput = document.getElementById('statement-search-input');
+
+            if (companySelect) {
+                companySelect.addEventListener('change', function() {
+                    const isCompanySelected = this.value !== "0";
+                    searchBtn.disabled = !isCompanySelected;
+                    if (!isCompanySelected) {
+                        document.getElementById('statements-body').innerHTML = 
+                            `<tr><td colspan="7" class="text-center text-muted p-3">Select a company and search for statements</td></tr>`;
+                    }
+                });
+            }
+
+            // Search button click handler
+            if (searchBtn) {
+                searchBtn.addEventListener('click', searchStatements);
+            }
+
+            // Enter key in search input
+            if (searchInput) {
+                searchInput.addEventListener('keyup', function(e) {
+                    if (e.key === 'Enter') {
+                        searchStatements();
+                    }
+                });
+            }
+
+            // Main search function
+            function searchStatements() {
+                const companyId = companySelect.value;
+                const searchTerm = searchInput.value.trim();
+                const statementsBody = document.getElementById('statements-body');
+
+                // === SIMPLE VALIDATION ===
+                if (!searchTerm) {
+                    Swal.fire('Search Required', 'Please enter at least part of the statement reference.', 'info');
+                    searchInput.focus();
+                    return;
+                }
+                
+                if (!companyId || companyId === "0") {
+                    Swal.fire('Select Company', 'Please select a company first.', 'warning');
+                    return;
+                }
+
+                // Show loading
+                searchBtn.disabled = true;
+                searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Searching...';
+                statementsBody.innerHTML = `
+                    <tr><td colspan="7" class="text-center p-3">Searching...</td></tr>
+                `;
+
+                const apiUrl = `/api/search_statements?company_id=${companyId}&term=${encodeURIComponent(searchTerm)}&limit=30&include_exported=1`;
+
+                fetch(apiUrl)
+                    .then(r => {
+                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                        return r.json();
+                    })
+                    .then(data => {
+                        if (!Array.isArray(data) || data.length === 0) {
+                            statementsBody.innerHTML = `
+                                <tr>
+                                    <td colspan="7" class="text-center text-muted p-3">
+                                        <i class="bi bi-search me-2"></i>No statements found
+                                    </td>
+                                </tr>
+                            `;
+                            return;
+                        }
+
+                        // Render the statements
+                        statementsBody.innerHTML = data.map(stmt => {
+                            const date = new Date(stmt.StmntDate).toLocaleDateString('en-ZA');
+                            const amount = parseFloat(stmt.StmntTotalAmount).toLocaleString('en-ZA', { 
+                                style: 'currency', 
+                                currency: 'ZAR' 
+                            });
+                            
+                            const isExported = stmt.IsExported === 1;
+                            const statusBadge = isExported 
+                                ? '<span class="badge bg-success">Exported</span>' 
+                                : '<span class="badge bg-primary">Ready</span>';
+                            
+                            const actionBtn = !isExported 
+                                ? `<button class="btn btn-sm btn-danger reverse-btn" 
+                                        data-id="${stmt.StmntLink}" 
+                                        data-ref="${stmt.StmntReference}">
+                                    <i class="bi bi-trash"></i> Reverse
+                                </button>`
+                                : '<span class="text-muted">N/A</span>';
+                            
+                            return `
+                                <tr class="clickable-statement" data-statement='${JSON.stringify(stmt)}'>
+                                    <td><strong>${stmt.StmntReference}</strong></td>
+                                    <td>${date}</td>
+                                    <td>${stmt.CompanyName || 'N/A'}</td>
+                                    <td>${stmt.InsurerName || 'N/A'}</td>
+                                    <td class="text-end">${amount}</td>
+                                    <td class="text-center">${statusBadge}</td>
+                                    <td class="text-center">${actionBtn}</td>
+                                </tr>
+                            `;
+                        }).join('');
+
+                        // Add click handlers to reverse buttons
+                        document.querySelectorAll('.reverse-btn').forEach(btn => {
+                            btn.addEventListener('click', function(e) {
+                                e.stopPropagation();
+                                const stmntId = this.getAttribute('data-id');
+                                const stmntRef = this.getAttribute('data-ref');
+                                showReverseConfirmation(stmntId, stmntRef);
+                            });
+                        });
+
+                        // Make rows clickable to show details
+                        document.querySelectorAll('.clickable-statement').forEach(row => {
+                            row.addEventListener('click', function() {
+                                const stmt = JSON.parse(this.getAttribute('data-statement'));
+                                showStatementDetails(stmt);
+                            });
+                        });
+                    })
+                    .catch(error => {
+                        console.error("Error searching statements:", error);
+                        statementsBody.innerHTML = `
+                            <tr>
+                                <td colspan="7" class="text-center text-danger p-3">
+                                    Error searching statements: ${error.message}
+                                </td>
+                            </tr>
+                        `;
+                    })
+                    .finally(() => {
+                        searchBtn.disabled = false;
+                        searchBtn.innerHTML = '<i class="bi bi-search me-2"></i>Search';
+                    });
+            }
+
+        function showStatementDetails(stmt) {
+            const date = new Date(stmt.StmntDate).toLocaleDateString('en-ZA');
+            const amount = parseFloat(stmt.StmntTotalAmount).toLocaleString('en-ZA', { 
+                style: 'currency', 
+                currency: 'ZAR' 
+            });
+            
+            const isExported = stmt.IsExported === 1;
+            
+            // Status message based on export status
+            let statusMessage = '';
+            if (isExported) {
+                statusMessage = `
+                    <div class="alert alert-warning mb-3">
+                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                        This statement has been exported to a batch file and cannot be reversed.
+                    </div>`;
+            } else {
+                statusMessage = `
+                    <div class="alert alert-info mb-3">
+                        <i class="bi bi-info-circle-fill me-2"></i>
+                        This statement can be reversed if needed.
+                    </div>`;
+            }
+            
+            Swal.fire({
+                title: `Statement: ${stmt.StmntReference}`,
+                html: `
+                    <div class="text-start">
+                        <table class="table table-sm mb-3">
+                            <tr><th class="w-25">Date:</th><td>${date}</td></tr>
+                            <tr><th class="w-25">Reference:</th><td><strong>${stmt.StmntReference}</strong></td></tr>
+                            <tr><th class="w-25">Company:</th><td>${stmt.CompanyName || 'N/A'}</td></tr>
+                            <tr><th class="w-25">Insurer:</th><td>${stmt.InsurerName || 'N/A'}</td></tr>
+                            <tr><th class="w-25">Amount:</th><td class="fw-bold">${amount}</td></tr>
+                        </table>
+                        ${statusMessage}
+                    </div>
+                `,
+                showCancelButton: !isExported,
+                confirmButtonText: isExported ? 'Close' : 'Reverse Statement',
+                confirmButtonColor: isExported ? '#6c757d' : '#dc3545',
+                cancelButtonText: 'Close',
+                width: 600,
+                focusConfirm: false,
+                focusCancel: !isExported
+            }).then((result) => {
+                if (result.isConfirmed && !isExported) {
+                    showReverseConfirmation(stmt.StmntLink, stmt.StmntReference);
+                }
+            });
+        }
+
+            function showReverseConfirmation(stmntId, stmntRef) {
+                Swal.fire({
+                    title: 'Confirm Statement Reversal',
+                    html: `
+                        <div class="text-start">
+                            <p>You are about to permanently delete statement:</p>
+                            <div class="alert alert-danger">
+                                <strong>Reference:</strong> ${stmntRef}<br>
+                                <strong>ID:</strong> ${stmntId}
+                            </div>
+                            <p class="text-danger fw-bold"><i class="bi bi-exclamation-triangle-fill"></i> This action cannot be undone!</p>
+                            <p>To confirm, type <code>DELETE ${stmntRef}</code> below:</p>
+                            <input type="text" id="confirm-delete-input" class="form-control mt-2" 
+                                placeholder="Type DELETE ${stmntRef}">
+                        </div>
+                    `,
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonText: 'Yes, Delete Permanently',
+                    confirmButtonColor: '#dc3545',
+                    cancelButtonText: 'Cancel',
+                    showLoaderOnConfirm: true,
+                    preConfirm: () => {
+                        const input = document.getElementById('confirm-delete-input').value;
+                        if (input !== `DELETE ${stmntRef}`) {
+                            Swal.showValidationMessage('You must type the confirmation text exactly as shown');
+                            return false;
+                        }
+                        return true;
+                    }
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        executeReverseStatement(stmntId, stmntRef);
+                    }
+                });
+            }
+
+            function executeReverseStatement(stmntId, stmntRef) {
+                Swal.fire({
+                    title: 'Reversing Statement...',
+                    text: 'Please wait while we delete the statement and all related records.',
+                    didOpen: () => Swal.showLoading(),
+                    allowOutsideClick: false,
+                    allowEscapeKey: false
+                });
+                
+                fetch('/api/reverse_statement', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ stmntLink: parseInt(stmntId) })
+                })
+                .then(r => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        Swal.fire({
+                            title: 'Success!',
+                            text: data.message,
+                            icon: 'success',
+                            timer: 2000,
+                            showConfirmButton: false
+                        }).then(() => {
+                            // Refresh the page
+                            window.location.reload();
+                        });
+                    } else {
+                        Swal.fire('Error!', data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error("Error reversing statement:", error);
+                    Swal.fire('Error!', `Failed to reverse statement: ${error.message}`, 'error');
+                });
+            }
+
+            // Make functions available globally if needed
+            window.searchStatements = searchStatements;
+            window.showReverseConfirmation = showReverseConfirmation;
+        });
+
+        // Simple button loading state - WORKING VERSION
+        function showUploadLoading(button) {
+            // Check if form is valid
+            const form = button.closest('form');
+            if (!form.checkValidity()) {
+                form.reportValidity(); // Show validation messages
+                return false; // Don't submit
+            }
+            
+            // Change button to loading state
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Processing...';
+            
+            // Submit the form
+            form.submit();
+            
+            return false; // Prevent default button behavior
+        }
     </script>
 </body>
 </html>

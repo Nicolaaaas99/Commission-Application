@@ -26,14 +26,14 @@ STAGING_TABLE = 'ZZImportStage'
 
 
 # --- Stored Procedure Names ---
-SELECT_PAYMENTS_SP = 'sp_SelectPaymentsToProcess'
-PROCESS_IMPORT_SP = 'sp_ProcessCommissionImport'
-CREATE_POLICY_SP = 'sp_CreatePolicyMasterFromInput'
+SELECT_PAYMENTS_SP = 'sp_SelectPaymentsToProcess' 
+PROCESS_IMPORT_SP = 'sp_ProcessCommissionImport' # Requires User
+CREATE_POLICY_SP = 'sp_CreatePolicyMasterFromInput' # Requires User
 GET_ACTION_SP = 'sp_GetPoliciesNeedingAction'
 INSERT_SPLIT_SP = 'sp_InsertPolicySplit'
-UPDATE_INSURANCE_TYPE_SP = 'sp_UpdatePolicyInsuranceType'
-INSERT_HIST_SP = 'sp_InsertIntoHistoryFromInput'
-INSERT_HISTSPLIT_SP = 'sp_InsertCommStmntHistSplit'
+UPDATE_INSURANCE_TYPE_SP = 'sp_UpdatePolicyInsuranceType' # Requires User
+INSERT_HIST_SP = 'sp_InsertIntoHistoryFromInput' # Requires User
+INSERT_HISTSPLIT_SP = 'sp_InsertCommStmntHistSplit'# Requires User
 INSERT_EVOCOMM_SP = 'sp_RetrieveEvoCommissionSplits'
 SEARCH_POLICIES_SP = 'sp_SearchPoliciesAdvanced'
 GET_SPLITS_SP = 'sp_GetPolicySplits'
@@ -48,9 +48,13 @@ GET_SPLIT_HISTORY_SP = 'sp_GetPolicySplitHistoryReport'
 VOID_BATCH_CSV_SP = 'sp_VoidBatchCSV'
 SYNC_TO_EVO_SP = 'sp_SyncCommissionToEvolution'
 UNSYNC_FROM_EVO_SP = 'sp_UnsyncCommissionFromEvolution'
-# --- NEW: Stored procedures for Deferral Feature ---
 GET_LAPSED_POLICIES_SP = 'sp_GetLapsedPolicies'
 CREATE_DEFERRAL_SP = 'sp_CreateDeferralBatchCSV'
+GET_UI_HISTORY_SP = 'sp_GetPolicyHistoryForUI'
+SPLIT_CORRECTION_SP = 'sp_SplitCorrection'
+CREATE_CORRECTION_CSV_SP = 'sp_CreateCorrectionBatchCSV'
+REVERSE_UPLOAD_SP = 'sp_ReverseStatementUpload'
+SEARCH_STATEMENTS_SP = 'sp_SearchStatementsAdvanced'
 
 
 
@@ -128,7 +132,7 @@ def run_sp_with_results(sp_name, *params):
 
 
 def insert_to_staging(df):
-    """Inserts data from a DataFrame into the ZZImportStage table."""
+    """Inserts data from a DataFrame into the ZZImportStage table with inclusive amount and calculated VAT."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -139,15 +143,22 @@ def insert_to_staging(df):
                 Commission_Fees_Incl, VAT_Amount
             ) VALUES (?, ?, ?, ?, ?)
         """
-        data_to_insert = [
-            (
+        data_to_insert = []
+        for _, row in df.iterrows():
+            # Get the inclusive amount from user's upload
+            commission_incl = float(row['Commission_Fees_Incl']) if pd.notna(row['Commission_Fees_Incl']) else 0.0
+            
+            # Calculate VAT from inclusive amount (ignore the uploaded VAT_Amount)
+            vat_amount = (commission_incl / 1.15) * 0.15
+            
+            data_to_insert.append((
                 str(row['Plan_number']) if pd.notna(row['Plan_number']) else None,
                 str(row['Planholder_surname']) if pd.notna(row['Planholder_surname']) else None,
                 str(row['Planholder_initials']) if pd.notna(row['Planholder_initials']) else None,
-                float(row['Commission_Fees_Incl']) if pd.notna(row['Commission_Fees_Incl']) else 0.0,
-                float(row['VAT_Amount']) if pd.notna(row['VAT_Amount']) else 0.0
-            ) for _, row in df.iterrows()
-        ]
+                commission_incl,  # Keep the original inclusive amount
+                vat_amount        # Store the calculated VAT amount
+            ))
+        
         cursor.executemany(insert_sql, data_to_insert)
         conn.commit()
         logging.info(f"Data inserted into {STAGING_TABLE} successfully")
@@ -710,6 +721,152 @@ def create_deferral_batch():
         logging.error(f"Error creating deferral for policy link {policy_link}: {friendly_message}")
         return jsonify({"success": False, "message": friendly_message}), 500
 
+@app.route('/api/correction_history/<int:policy_link>')
+def get_correction_history(policy_link):
+    """Fetches history for the checkboxes."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {GET_UI_HISTORY_SP} ?", policy_link)
+        columns = [column[0] for column in cursor.description]
+        history = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(history)
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/process_split_correction', methods=['POST'])
+def process_split_correction():
+    """1. Loops through selected transactions. 2. Runs sp_SplitCorrection for each. 3. Runs sp_CreateCorrectionBatchCSV to generate the file."""
+    data = request.get_json()
+    policy_link = data.get('policyLink')
+    transactions = data.get('transactions')
+    
+    if not policy_link or not transactions:
+        return jsonify({"success": False, "message": "Missing policy or transactions."}), 400
+    
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 1. Apply Logic: Reverse old, Insert new (using current split config)
+        for item in transactions:
+            cursor.execute(f"EXEC {SPLIT_CORRECTION_SP} ?, ?, ?", 
+                          int(item['stmntId']), int(policy_link), int(item['periodLink']))
+        
+        # 2. Generate CSV: Selects the just-created unexported rows
+        cursor.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?", int(policy_link))
+        
+        # Fetch the data that was selected
+        batch_data = []
+        # Try to get results if any
+        try:
+            columns = [column[0] for column in cursor.description]
+            rows = cursor.fetchall()
+            batch_data = [dict(zip(columns, row)) for row in rows]
+        except Exception as fetch_err:
+            logging.warning(f"No rows returned from procedure: {fetch_err}")
+        
+        conn.commit()
+        
+        if not batch_data:
+            return jsonify({
+                "success": False, 
+                "message": "Correction applied, but no financial data generated for batch (amounts might be 0 or no unexported rows found)."
+            }), 404
+        
+        # 3. Return CSV File
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(batch_data)
+        
+        return jsonify({
+            "success": True, 
+            "csv_data": output.getvalue()
+        })
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Error processing correction: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+        
+    finally:
+        # Don't close the connection here - let Flask handle it
+        if cursor:
+            cursor.close()
+
+@app.route('/api/reverse_statement', methods=['POST'])
+def reverse_statement():
+    """Reverses/deletes a statement and all related records."""
+    data = request.get_json()
+    stmnt_link = data.get('stmntLink')
+    user_name = 'WebAppUser'  # You can get this from session/auth later
+    
+    if not stmnt_link:
+        return jsonify({"success": False, "message": "Statement Link is required."}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Execute the reversal stored procedure
+        cursor.execute(f"EXEC {REVERSE_UPLOAD_SP} ?, ?", int(stmnt_link), user_name)
+        
+        # Get the result
+        columns = [column[0] for column in cursor.description]
+        result = cursor.fetchone()
+        
+        if result:
+            result_dict = dict(zip(columns, result))
+            conn.commit()
+            
+            # Log the action
+            logging.info(f"Statement {stmnt_link} ({result_dict.get('StmntReference')}) reversed by {user_name}")
+            
+            return jsonify({
+                "success": True,
+                "message": f"Statement {result_dict.get('StmntReference')} has been successfully reversed and deleted.",
+                "details": result_dict
+            })
+        else:
+            conn.rollback()
+            return jsonify({"success": False, "message": "No result returned from reversal procedure."}), 500
+            
+    except pyodbc.Error as e:
+        if conn:
+            conn.rollback()
+        error_msg = str(e).split(']')[-1].strip()
+        logging.error(f"Error reversing statement {stmnt_link}: {error_msg}")
+        return jsonify({"success": False, "message": error_msg}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Unexpected error reversing statement {stmnt_link}: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/search_statements')
+def search_statements():
+    """Searches for statements with various filters."""
+    company_id = request.args.get('company_id', 0, type=int)
+    insurer_id = request.args.get('insurer_id', 0, type=int)
+    search_term = request.args.get('term', '')
+    limit = request.args.get('limit', 30, type=int)
+    include_exported = request.args.get('include_exported', 0, type=int)
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {SEARCH_STATEMENTS_SP} ?, ?, ?, ?, ?", 
+                      company_id, insurer_id, search_term, limit, include_exported)
+        columns = [column[0] for column in cursor.description]
+        statements = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return jsonify(statements)
+    except Exception as e:
+        logging.error(f"Error searching statements: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
