@@ -512,6 +512,7 @@ def execute_commission_run():
 
     try:
         run_sp(COMMISSION_RUN_SP, int(period_link), int(year_month), int(company_id))
+        run_sp(SYNC_TO_EVO_SP, company_id)
         return jsonify({"success": True, "message": f"Commission run for period {year_month} completed successfully."})
     except Exception as e:
         error_message = str(e)
@@ -528,39 +529,12 @@ def cancel_commission_run():
         return jsonify({"success": False, "message": "Period and Company ID are required."}), 400
     
     try:
+        run_sp(UNSYNC_FROM_EVO_SP, company_id)
         run_sp(CANCEL_RUN_SP, int(period_link), int(company_id))
         return jsonify({"success": True, "message": f"Commission run for period link {period_link} has been cancelled."})
     except Exception as e:
         error_message = str(e)
         friendly_message = error_message.split(']')[-1].strip()
-        return jsonify({"success": False, "message": friendly_message}), 500
-
-@app.route('/api/sync_commission', methods=['POST'])
-def sync_commission():
-    data = request.get_json()
-    company_id = data.get('companyId')
-    if not company_id:
-        return jsonify({"success": False, "message": "Company ID is required."}), 400
-    try:
-        run_sp(SYNC_TO_EVO_SP, int(company_id))
-        return jsonify({"success": True, "message": "Successfully synced latest commission period to Evolution."})
-    except Exception as e:
-        friendly_message = str(e).split(']')[-1].strip()
-        logging.error(f"Error syncing commission: {friendly_message}")
-        return jsonify({"success": False, "message": friendly_message}), 500
-
-@app.route('/api/unsync_commission', methods=['POST'])
-def unsync_commission():
-    data = request.get_json()
-    company_id = data.get('companyId')
-    if not company_id:
-        return jsonify({"success": False, "message": "Company ID is required."}), 400
-    try:
-        run_sp(UNSYNC_FROM_EVO_SP, int(company_id))
-        return jsonify({"success": True, "message": "Successfully unsynced latest commission period from Evolution."})
-    except Exception as e:
-        friendly_message = str(e).split(']')[-1].strip()
-        logging.error(f"Error unsyncing commission: {friendly_message}")
         return jsonify({"success": False, "message": friendly_message}), 500
 
 
@@ -723,16 +697,105 @@ def create_deferral_batch():
 
 @app.route('/api/correction_history/<int:policy_link>')
 def get_correction_history(policy_link):
-    """Fetches history for the checkboxes."""
+    """Fetches unique history rows per statement with cleaned split details."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"EXEC {GET_UI_HISTORY_SP} ?", policy_link)
+        
+        # We group by StmntId to get one row per transaction.
+        # The subquery (S2) ensures we only get DISTINCT broker splits for that specific statement.
+        query = """
+            SELECT 
+                S.HistSplitStmntId,
+                MAX(S.HistSplitStmntReference) AS HistSplitStmntReference,
+                MAX(S.HistSplitStmntDate) AS StmntDate,
+                MAX(S.HistSplitCommPeriodYearMonth) AS PeriodYearMonth,
+                MAX(S.HistSplitCommPeriodLink) AS HistSplitCommPeriodLink,
+                SUM(S.HistSplitCommIncl) AS TotalCommIncl,
+                MAX(CAST(S.HistSplitIsCorrection AS INT)) AS IsCorrected,
+                CASE WHEN SUM(S.HistSplitCommIncl) < 0 THEN 1 ELSE 0 END AS IsReversal,
+                (
+                    SELECT STRING_AGG(CONCAT(B2.ComBrokerCode, ':', CAST(S2.HistSplitPercent * 100 AS INT), '%'), ', ')
+                    FROM (
+                        SELECT DISTINCT HistSplitBrokerLink, HistSplitPercent 
+                        FROM CommStmntHistSplit 
+                        WHERE HistSplitStmntId = S.HistSplitStmntId 
+                        AND HistSplitPolicyLink = S.HistSplitPolicyLink
+                    ) S2
+                    JOIN _uvCommBroker B2 ON S2.HistSplitBrokerLink = B2.ComBrokerEvoRepId
+                ) AS SplitDetails
+            FROM CommStmntHistSplit S
+            WHERE S.HistSplitPolicyLink = ?
+            GROUP BY S.HistSplitStmntId, S.HistSplitPolicyLink
+            ORDER BY MAX(S.HistSplitStmntDate) DESC
+        """
+        
+        cursor.execute(query, policy_link)
         columns = [column[0] for column in cursor.description]
         history = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        
         return jsonify(history)
     except Exception as e:
+        logging.error(f"Error in correction_history: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+    
+
+@app.route('/api/preview_correction/<int:policy_link>/<int:stmnt_id>')
+def preview_correction(policy_link, stmnt_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        def process_splits(rows):
+            if not rows: return []
+            
+            # 1. Use a dictionary to deduplicate by Broker Code automatically
+            unique_splits = {}
+            for row in rows:
+                code = row[0]
+                percent = float(row[1])
+                unique_splits[code] = percent
+            
+            # 2. Convert dictionary back to list of objects
+            data = [{"broker": k, "percent": v} for k, v in unique_splits.items()]
+            
+            # 3. Detect decimal format (0.5 vs 50.0)
+            # If no single broker has more than 1.0, it is likely in decimal format
+            max_val = max((d['percent'] for d in data), default=0)
+            if 0 < max_val <= 1.0:
+                for d in data:
+                    d['percent'] = round(d['percent'] * 100, 2)
+            else:
+                for d in data:
+                    d['percent'] = round(d['percent'], 2)
+            return data
+
+        # 1. NEW SPLITS (Current Policy Settings) - Fetch Code
+        cursor.execute("""
+            SELECT B.ComBrokerCode, S.SplitPercent 
+            FROM CommSplit S
+            JOIN _uvCommBroker B ON S.SplitBrokerId = B.ComBrokerEvoRepId
+            WHERE S.SplitPolicyId = ?
+        """, policy_link)
+        new_splits = process_splits(cursor.fetchall())
+        
+        # 2. OLD SPLITS (Historical Statement) - Fetch Code + DISTINCT
+        cursor.execute("""
+            SELECT DISTINCT B.ComBrokerCode, S.HistSplitPercent 
+            FROM CommStmntHistSplit S
+            JOIN _uvCommBroker B ON S.HistSplitBrokerLink = B.ComBrokerEvoRepId
+            WHERE S.HistSplitStmntId = ? AND S.HistSplitPolicyLink = ?
+        """, stmnt_id, policy_link)
+        old_splits = process_splits(cursor.fetchall())
+        
+        return jsonify({
+            "success": True, 
+            "old_splits": old_splits, 
+            "new_splits": new_splits
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 @app.route('/api/process_split_correction', methods=['POST'])
 def process_split_correction():
@@ -756,7 +819,8 @@ def process_split_correction():
                           int(item['stmntId']), int(policy_link), int(item['periodLink']))
         
         # 2. Generate CSV: Selects the just-created unexported rows
-        cursor.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?", int(policy_link))
+        stmnt_ids_csv = ",".join(str(t['stmntId']) for t in transactions)
+        cursor.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?, ?", int(policy_link), stmnt_ids_csv)
         
         # Fetch the data that was selected
         batch_data = []

@@ -289,16 +289,6 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Split Correction Batch</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
-                    <div class="alert alert-warning mb-4">
-                        <i class="bi bi-exclamation-triangle-fill me-2"></i>
-                        <strong>Process:</strong> 
-                        1. Edit the policy to have the correct splits. 
-                        2. Search for the policy here. 
-                        3. Tick the past statements to correct. 
-                        4. Click "Create Correction Batch". 
-                        (The batch date will be Today).
-                    </div>
-
                     <div class="row g-3 mb-3">
                         <div class="col-md-4">
                             <select id="correction-company-select" class="form-select">
@@ -428,11 +418,11 @@
                     </div>
                     
                     <hr class="my-4">
-                    <p class="card-text text-muted">The actions below apply to the <strong>latest closed period</strong> for the selected company.</p>
+                    <!-- <p class="card-text text-muted">The actions below apply to the <strong>latest closed period</strong> for the selected company.</p>
                      <div class="d-flex gap-2">
                         <button class="btn btn-info" id="sync-evolution-btn" disabled><i class="bi bi-arrow-repeat me-2"></i>Sync to Evolution</button>
                         <button class="btn btn-warning" id="unsync-evolution-btn" disabled><i class="bi bi-arrow-counterclockwise me-2"></i>Unsync from Evolution</button>
-                    </div>
+                    </div> -->
                 </div>
             </div>
         </div>
@@ -512,8 +502,8 @@
         const commissionPeriodSelect = document.getElementById('commission-period-select');
         const runBtn = document.getElementById('run-commission-btn');
         const cancelBtn = document.getElementById('cancel-commission-btn');
-        const syncBtn = document.getElementById('sync-evolution-btn');
-        const unsyncBtn = document.getElementById('unsync-evolution-btn');
+        // const syncBtn = document.getElementById('sync-evolution-btn');
+        // const unsyncBtn = document.getElementById('unsync-evolution-btn');
 
         const editCompanySelect = document.getElementById('edit-company-select');
         const editInsurerSelect = document.getElementById('edit-insurer-select');
@@ -920,8 +910,8 @@
             commissionPeriodSelect.disabled = true;
             runBtn.disabled = true;
             cancelBtn.disabled = true;
-            syncBtn.disabled = !companyId;
-            unsyncBtn.disabled = !companyId;
+            // syncBtn.disabled = !companyId;
+            // unsyncBtn.disabled = !companyId;
 
             if (!companyId) {
                 commissionPeriodSelect.innerHTML = '<option value="" selected disabled>Select a company first...</option>';
@@ -1013,67 +1003,67 @@
             });
         });
 
-        syncBtn.addEventListener('click', function() {
-            const companyId = runCompanySelect.value;
-            const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
-            if (!companyId) { return; }
+        // syncBtn.addEventListener('click', function() {
+        //     const companyId = runCompanySelect.value;
+        //     const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
+        //     if (!companyId) { return; }
 
-            Swal.fire({
-                title: 'Confirm Sync to Evolution',
-                html: `This will update references in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This should only be done after a successful commission run. <br><br>Are you sure you want to proceed?`,
-                icon: 'question',
-                showCancelButton: true,
-                confirmButtonText: 'Yes, Sync It!',
-                confirmButtonColor: '#17a2b8'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    fetch('/api/sync_commission', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ companyId: parseInt(companyId) })
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            Swal.fire('Success!', data.message, 'success');
-                        } else {
-                            Swal.fire('Error!', data.message, 'error');
-                        }
-                    });
-                }
-            });
-        });
+        //     Swal.fire({
+        //         title: 'Confirm Sync to Evolution',
+        //         html: `This will update references in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This should only be done after a successful commission run. <br><br>Are you sure you want to proceed?`,
+        //         icon: 'question',
+        //         showCancelButton: true,
+        //         confirmButtonText: 'Yes, Sync It!',
+        //         confirmButtonColor: '#17a2b8'
+        //     }).then((result) => {
+        //         if (result.isConfirmed) {
+        //             fetch('/api/sync_commission', {
+        //                 method: 'POST',
+        //                 headers: { 'Content-Type': 'application/json' },
+        //                 body: JSON.stringify({ companyId: parseInt(companyId) })
+        //             })
+        //             .then(res => res.json())
+        //             .then(data => {
+        //                 if (data.success) {
+        //                     Swal.fire('Success!', data.message, 'success');
+        //                 } else {
+        //                     Swal.fire('Error!', data.message, 'error');
+        //                 }
+        //             });
+        //         }
+        //     });
+        // });
 
-        unsyncBtn.addEventListener('click', function() {
-            const companyId = runCompanySelect.value;
-            const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
-            if (!companyId) { return; }
+        // unsyncBtn.addEventListener('click', function() {
+        //     const companyId = runCompanySelect.value;
+        //     const companyName = runCompanySelect.options[runCompanySelect.selectedIndex].text;
+        //     if (!companyId) { return; }
 
-            Swal.fire({
-                title: 'Confirm Unsync from Evolution',
-                html: `This will revert reference changes in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This is a corrective action and should be used with caution. <br><br>Are you sure you want to proceed?`,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonText: 'Yes, Unsync It!',
-                confirmButtonColor: '#ffc107'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                     fetch('/api/unsync_commission', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ companyId: parseInt(companyId) })
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            Swal.fire('Success!', data.message, 'success');
-                        } else {
-                            Swal.fire('Error!', data.message, 'error');
-                        }
-                    });
-                }
-            });
-        });
+        //     Swal.fire({
+        //         title: 'Confirm Unsync from Evolution',
+        //         html: `This will revert reference changes in Evolution for the <b>latest closed commission period</b> for <b>${companyName}</b>. This is a corrective action and should be used with caution. <br><br>Are you sure you want to proceed?`,
+        //         icon: 'warning',
+        //         showCancelButton: true,
+        //         confirmButtonText: 'Yes, Unsync It!',
+        //         confirmButtonColor: '#ffc107'
+        //     }).then((result) => {
+        //         if (result.isConfirmed) {
+        //              fetch('/api/unsync_commission', {
+        //                 method: 'POST',
+        //                 headers: { 'Content-Type': 'application/json' },
+        //                 body: JSON.stringify({ companyId: parseInt(companyId) })
+        //             })
+        //             .then(res => res.json())
+        //             .then(data => {
+        //                 if (data.success) {
+        //                     Swal.fire('Success!', data.message, 'success');
+        //                 } else {
+        //                     Swal.fire('Error!', data.message, 'error');
+        //                 }
+        //             });
+        //         }
+        //     });
+        // });
 
         const batchStatementSelect = document.getElementById('batch-statement-select');
         const createBatchBtn = document.getElementById('create-batch-btn');
@@ -1347,134 +1337,265 @@
     });
 
     // 2. Load History Logic
-    function loadCorrHistory(policy) {
+    async function loadCorrHistory(policy, clickedBtn) {
         selectedPolicyLink = policy.PolicyLink;
-        document.getElementById('correction-policy-title').innerText = `History for: ${policy.PolicyNumber} - ${policy.PolicyHolder}`;
+        
+        // Update Title
+        const titleEl = document.getElementById('correction-policy-title');
+        if(titleEl) titleEl.innerText = `History for: ${policy.PolicyNumber} - ${policy.PolicyHolder}`;
+        
+        // Show Wrapper
         corrWrapper.classList.remove('d-none');
-        corrBody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
+        
+        // Set Loading State
+        corrBody.innerHTML = '<tr><td colspan="6" class="text-center"><span class="spinner-border spinner-border-sm"></span> Loading history...</td></tr>';
         createCorrBatchBtn.disabled = true;
 
-        // Visual feedback on list
-        document.querySelectorAll('#correction-policy-list button').forEach(b => b.classList.remove('active'));
-        event.target.closest('button').classList.add('active');
+        // Visual feedback for the list selection
+        if (clickedBtn) {
+            document.querySelectorAll('#correction-policy-list button').forEach(b => b.classList.remove('active'));
+            clickedBtn.classList.add('active');
+        }
 
-        fetch(`/api/correction_history/${policy.PolicyLink}`)
-            .then(r => r.json())
-            .then(data => {
-                corrBody.innerHTML = '';
-                if(data.length === 0) {
-                    corrBody.innerHTML = '<tr><td colspan="6" class="text-center">No split history found for this policy.</td></tr>';
-                    return;
-                }
+        try {
+            const response = await fetch(`/api/correction_history/${policy.PolicyLink}`);
+            const data = await response.json();
+            
+            // Safety check for data format
+            if (!Array.isArray(data)) {
+                if (data.message) throw new Error(data.message);
+                throw new Error("Invalid data format received from server.");
+            }
+
+            corrBody.innerHTML = '';
+            
+            if(data.length === 0) {
+                corrBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No history found for this policy.</td></tr>';
+                return;
+            }
+            
+            data.forEach(row => {
+                // 1. Format Amount
+                const rawAmount = parseFloat(row.TotalCommIncl);
+                const amt = rawAmount.toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
                 
-                data.forEach(row => {
-                    const amt = parseFloat(row.TotalCommIncl).toLocaleString('en-ZA', { style: 'currency', currency: 'ZAR' });
-                    // format date cleanly
-                    const dateObj = new Date(row.StmntDate);
-                    const dateStr = !isNaN(dateObj) ? dateObj.toLocaleDateString('en-ZA') : row.StmntDate;
-                    
-                    // Prepare split details display - SHOW DIRECTLY IN COLUMN
-                    let splitDetailsHtml = '';
-                    if (row.SplitDetails && row.SplitDetails !== 'No splits found') {
-                        // Show split details directly with line breaks for readability
-                        const splitDetailsText = row.SplitDetails.replace(/, /g, '<br>');
-                        splitDetailsHtml = `
-                            <div class="split-details-container">
-                                <small class="text-muted d-block">
-                                    ${splitDetailsText}
-                                </small>
-                            </div>
-                        `;
-                    } else {
-                        splitDetailsHtml = '<small class="text-muted">No split data</small>';
-                    }
+                // 2. Format Date
+                const dateObj = new Date(row.StmntDate);
+                const dateStr = !isNaN(dateObj) ? dateObj.toLocaleDateString('en-ZA') : row.StmntDate;
+                
+                // --- LOCKING LOGIC ---
+                // Row is locked if it's already a reversal (negative) or flagged as corrected
+                const isReversal = rawAmount < 0; 
+                const isCorrected = row.IsCorrected === 1 || row.IsCorrected === true;
+                const isLocked = isReversal || isCorrected;
 
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td class="text-center">
-                            <input type="checkbox" class="form-check-input corr-check" 
-                                value="${row.HistSplitStmntId}" 
-                                data-period="${row.HistSplitCommPeriodLink}">
-                        </td>
-                        <td><strong>${row.HistSplitStmntReference}</strong></td>
-                        <td>${dateStr}</td>
-                        <td>${row.PeriodYearMonth || ''}</td>
-                        <td class="split-details-cell">${splitDetailsHtml}</td>
-                        <td class="text-end mono-font fw-bold">${amt}</td>
-                    `;
-                    corrBody.appendChild(tr);
-                });
+                // --- STYLING LOGIC ---
+                let rowClass = '';
+                let statusBadge = '';
 
-                // Enable button only if checkboxes are checked
-                const checkboxes = document.querySelectorAll('.corr-check');
-                checkboxes.forEach(cb => {
-                    cb.addEventListener('change', () => {
-                        const anyChecked = Array.from(checkboxes).some(c => c.checked);
-                        createCorrBatchBtn.disabled = !anyChecked;
-                    });
-                });
-            })
-            .catch(error => {
-                console.error('Error loading correction history:', error);
-                corrBody.innerHTML = `
-                    <tr>
-                        <td colspan="6" class="text-center text-danger p-3">
-                            Error loading history: ${error.message}
-                        </td>
-                    </tr>
+                if (isCorrected) {
+                    rowClass = 'table-light text-muted fst-italic'; 
+                    statusBadge = '<span class="badge bg-secondary ms-2" style="font-size: 0.75em;">Corrected</span>';
+                } else if (isReversal) {
+                    rowClass = 'table-warning bg-opacity-10 text-muted'; 
+                    statusBadge = '<span class="badge bg-warning text-dark ms-2" style="font-size: 0.75em;">Reversal</span>';
+                }
+
+                // --- ROW CREATION ---
+                const tr = document.createElement('tr');
+                tr.className = rowClass;
+                tr.innerHTML = `
+                    <td class="text-center">
+                        <input type="checkbox" class="form-check-input corr-check" 
+                            value="${row.HistSplitStmntId}" 
+                            data-period="${row.HistSplitCommPeriodLink}"
+                            ${isLocked ? 'disabled' : ''}>
+                    </td>
+                    <td>
+                        <strong>${row.HistSplitStmntReference}</strong>
+                        ${statusBadge}
+                    </td>
+                    <td>${dateStr}</td>
+                    <td>${row.PeriodYearMonth || ''}</td>
+                    <td>
+                        <small class="${isLocked ? 'text-muted' : 'text-dark'}" style="display: block; max-width: 300px; white-space: normal;">
+                            ${row.SplitDetails || ''}
+                        </small>
+                    </td>
+                    <td class="text-end fw-bold ${rawAmount < 0 ? 'text-danger' : ''}">${amt}</td>
                 `;
+                corrBody.appendChild(tr);
             });
+
+            // Re-attach event listener for checkbox changes
+            const handleCheckboxChange = () => {
+                const anyChecked = !!corrBody.querySelector('.corr-check:checked');
+                createCorrBatchBtn.disabled = !anyChecked;
+            };
+
+            corrBody.querySelectorAll('.corr-check').forEach(cb => {
+                cb.addEventListener('change', handleCheckboxChange);
+            });
+
+        } catch (err) {
+            console.error("Error loading history:", err);
+            corrBody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Error: ${err.message}</td></tr>`;
+        }
+    }
+        async function handleCorrection(policyLink, stmntId) {
+        // 1. Get Preview Data
+        const response = await fetch(`/api/preview_correction/${policyLink}/${stmntId}`);
+        const data = await response.json();
+
+        // 2. Logic to prevent identical split correction
+        const isIdentical = compareSplits(data.old_splits, data.new_splits);
+        
+        if (isIdentical) {
+            Swal.fire('No Change Detected', 'The correction splits are identical to the original statement splits. Batch creation cancelled.', 'warning');
+            return;
+        }
+
+        // 3. Show confirmation with the split details
+        const splitSummary = data.new_splits.map(s => `${s.broker}: ${s.percent}%`).join('<br>');
+        
+        Swal.fire({
+            title: 'Confirm Correction Batch',
+            html: `You are about to create a batch for Statement ID: ${stmntId}<br><br><b>New Splits:</b><br>${splitSummary}`,
+            showCancelButton: true,
+            confirmButtonText: 'Create Batch'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                // Call your existing create_batch route here, 
+                // but ensure it passes both PolicyLink AND StmntId
+            }
+        });
     }
 
-    // 3. Create Batch Logic
-    createCorrBatchBtn.addEventListener('click', () => {
-        const checked = document.querySelectorAll('.corr-check:checked');
-        const transactions = Array.from(checked).map(cb => ({
-            stmntId: cb.value,
-            periodLink: cb.getAttribute('data-period')
-        }));
+    function compareSplits(oldS, newS) {
+        if (oldS.length !== newS.length) return false;
+        // Simple check: compare sorted strings of broker+percent
+        const format = s => `${s.broker}-${s.percent}`;
+        const oldStr = oldS.map(format).sort().join('|');
+        const newStr = newS.map(format).sort().join('|');
+        return oldStr === newStr;
+    }
 
-        Swal.fire({
-            title: 'Create Batch?',
-            text: `This will correct ${transactions.length} selected transaction(s) using the CURRENT policy split settings and download a CSV with Today's Date.`,
+// 3. Create Batch Logic (UPDATED WITH VALIDATION)
+createCorrBatchBtn.addEventListener('click', async () => {
+    const checked = document.querySelectorAll('.corr-check:checked');
+    if (checked.length === 0) return;
+
+    const transactions = Array.from(checked).map(cb => ({
+        stmntId: cb.value,
+        periodLink: cb.getAttribute('data-period')
+    }));
+
+    // --- STEP 1: VALIDATION PREVIEW ---
+    // We show a loading state while we check the splits
+    Swal.fire({
+        title: 'Checking for changes...',
+        didOpen: () => Swal.showLoading(),
+        allowOutsideClick: false
+    });
+
+    try {
+        // We fetch the preview for the FIRST selected transaction to verify against current settings
+        const response = await fetch(`/api/preview_correction/${selectedPolicyLink}/${transactions[0].stmntId}`);
+        const data = await response.json();
+
+        if (!data.success) {
+            throw new Error(data.message || "Failed to fetch preview data.");
+        }
+
+        // --- STEP 2: COMPARE ---
+        const isIdentical = compareSplits(data.old_splits, data.new_splits);
+
+        if (isIdentical) {
+            return Swal.fire({
+                title: 'No Change Detected',
+                text: 'The current policy splits are identical to the splits on the original statement. A correction batch is not necessary.',
+                icon: 'warning'
+            });
+        }
+
+        // --- STEP 3: CONFIRMATION WITH PREVIEW ---
+        // Format the display strings with better fallback and cleaner numbers
+        const oldHtml = data.old_splits.map(s => 
+            `<li>${s.broker || 'Unknown Broker'}: <b class="float-end">${s.percent}%</b></li>`
+        ).join('');
+
+        const newHtml = data.new_splits.map(s => 
+            `<li>${s.broker || 'Unknown Broker'}: <b class="float-end">${s.percent}%</b></li>`
+        ).join('');
+
+        // Updated Modal HTML for better readability
+        const confirmResult = await Swal.fire({
+            title: 'Confirm Correction Batch',
+            width: '650px',
+            html: `
+                <div class="text-start">
+                    <p class="mb-3">You are about to correct <b>${transactions.length}</b> statement(s).</p>
+                    <div class="card bg-light">
+                        <div class="card-body py-2">
+                            <div class="row">
+                                <div class="col-6 border-end">
+                                    <h6 class="text-danger small fw-bold">ORIGINAL SPLIT (HISTORY)</h6>
+                                    <ul class="small list-unstyled mb-0">${oldHtml}</ul>
+                                </div>
+                                <div class="col-6">
+                                    <h6 class="text-success small fw-bold">NEW SPLIT (CURRENT SETTINGS)</h6>
+                                    <ul class="small list-unstyled mb-0">${newHtml}</ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="mt-3 small text-muted">A reversal will be created for the history split and a new entry for the current split.</p>
+                </div>
+            `,
             icon: 'question',
             showCancelButton: true,
             confirmButtonText: 'Yes, Create Batch',
             confirmButtonColor: '#198754'
-        }).then((result) => {
-            if(result.isConfirmed) {
-                Swal.fire({ title: 'Processing...', didOpen: () => Swal.showLoading() });
-                
-                fetch('/api/process_split_correction', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        policyLink: selectedPolicyLink,
-                        transactions: transactions
-                    })
-                })
-                .then(r => r.json())
-                .then(data => {
-                    if(data.success) {
-                        // Download File
-                        const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
-                        const link = document.createElement("a");
-                        const url = URL.createObjectURL(blob);
-                        link.setAttribute("href", url);
-                        link.setAttribute("download", `CorrectionBatch_${selectedPolicyLink}.csv`);
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                        
-                        Swal.fire('Success', 'Batch downloaded successfully', 'success')
-                            .then(() => corrSearchBtn.click()); // Refresh to clear
-                    } else {
-                        Swal.fire('Error', data.message, 'error');
-                    }
-                });
-            }
         });
-    });
+
+        if (!confirmResult.isConfirmed) return;
+
+        // --- STEP 4: ACTUAL PROCESSING ---
+        Swal.fire({ title: 'Processing...', didOpen: () => Swal.showLoading() });
+
+        const processRes = await fetch('/api/process_split_correction', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                policyLink: selectedPolicyLink,
+                transactions: transactions
+            })
+        });
+        
+        const result = await processRes.json();
+
+        if (result.success) {
+            // Download File
+            const blob = new Blob([result.csv_data], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", `CorrectionBatch_${selectedPolicyLink}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            Swal.fire('Success', 'Batch downloaded successfully', 'success')
+                .then(() => corrSearchBtn.click()); // Refresh search results
+        } else {
+            Swal.fire('Error', result.message, 'error');
+        }
+
+    } catch (error) {
+        console.error("Correction Error:", error);
+        Swal.fire('Error', 'An error occurred during validation: ' + error.message, 'error');
+    }
+});
         // --- SIMPLIFIED STATEMENTS SEARCH LOGIC ---
         document.addEventListener('DOMContentLoaded', function() {
             // Load companies for the manage statements dropdown
