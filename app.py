@@ -713,21 +713,41 @@ def get_correction_history(policy_link):
                 MAX(S.HistSplitCommPeriodLink) AS HistSplitCommPeriodLink,
                 SUM(S.HistSplitCommIncl) AS TotalCommIncl,
                 MAX(CAST(S.HistSplitIsCorrection AS INT)) AS IsCorrected,
-                CASE WHEN SUM(S.HistSplitCommIncl) < 0 THEN 1 ELSE 0 END AS IsReversal,
+                CASE 
+                    WHEN SUM(S.HistSplitCommIncl) < 0 THEN 1 
+                    ELSE 0 
+                END AS IsReversal,
+
+                /* --- Aggregated, de-duplicated split details --- */
                 (
-                    SELECT STRING_AGG(CONCAT(B2.ComBrokerCode, ':', CAST(S2.HistSplitPercent * 100 AS INT), '%'), ', ')
-                    FROM (
-                        SELECT DISTINCT HistSplitBrokerLink, HistSplitPercent 
-                        FROM CommStmntHistSplit 
-                        WHERE HistSplitStmntId = S.HistSplitStmntId 
-                        AND HistSplitPolicyLink = S.HistSplitPolicyLink
-                    ) S2
-                    JOIN _uvCommBroker B2 ON S2.HistSplitBrokerLink = B2.ComBrokerEvoRepId
+                    SELECT STUFF((
+                        SELECT ', ' 
+                            + B2.ComBrokerCode 
+                            + ':' 
+                            + CAST(CAST(S2.HistSplitPercent * 100 AS INT) AS VARCHAR(10)) 
+                            + '%'
+                        FROM (
+                            SELECT DISTINCT 
+                                HistSplitBrokerLink, 
+                                HistSplitPercent
+                            FROM CommStmntHistSplit
+                            WHERE HistSplitStmntId   = S.HistSplitStmntId
+                            AND HistSplitPolicyLink = S.HistSplitPolicyLink
+                        ) S2
+                        JOIN _uvCommBroker B2
+                            ON S2.HistSplitBrokerLink = B2.ComBrokerEvoRepId
+                        FOR XML PATH(''), TYPE
+                    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
                 ) AS SplitDetails
+
             FROM CommStmntHistSplit S
             WHERE S.HistSplitPolicyLink = ?
-            GROUP BY S.HistSplitStmntId, S.HistSplitPolicyLink
-            ORDER BY MAX(S.HistSplitStmntDate) DESC
+            GROUP BY 
+                S.HistSplitStmntId,
+                S.HistSplitPolicyLink
+            ORDER BY 
+                MAX(S.HistSplitStmntDate) DESC;
+
         """
         
         cursor.execute(query, policy_link)
