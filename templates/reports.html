@@ -225,6 +225,7 @@
                             <h2 class="h4 mb-0">Report Results</h2>
                             <div id="broker-report-actions" class="d-none">
                                 <button class="btn btn-sm btn-outline-secondary" id="print-btn" title="Print Report"><i class="bi bi-printer"></i></button>
+                                <button class="btn btn-sm btn-outline-primary" id="email-btn" title="Email Report" data-bs-toggle="modal" data-bs-target="#emailModal"><i class="bi bi-envelope"></i></button>
                             </div>
                         </div>
                     </div>
@@ -334,6 +335,35 @@
             </div>
         </div>
     </main>
+
+    <!-- Email Modal -->
+    <div class="modal fade" id="emailModal" tabindex="-1" aria-labelledby="emailModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="emailModalLabel"><i class="bi bi-envelope me-2"></i>Email Commission Report</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">The report will be generated with <strong>Compliant Only</strong> policies and sent as a PDF attachment.</p>
+                    <div class="mb-3">
+                        <label for="email-recipient" class="form-label">Recipient Email Address:</label>
+                        <input type="email" class="form-control" id="email-recipient" placeholder="name@example.com" required>
+                        <div class="invalid-feedback">Please enter a valid email address.</div>
+                    </div>
+                    <div id="email-summary" class="small text-muted">
+                        <div><strong>Company:</strong> <span id="email-summary-company"></span></div>
+                        <div><strong>Period:</strong> <span id="email-summary-period"></span></div>
+                        <div><strong>Broker:</strong> <span id="email-summary-broker"></span></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="send-email-btn"><i class="bi bi-send me-2"></i>Send Report</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -567,6 +597,130 @@ document.addEventListener('DOMContentLoaded', function () {
                 printBtn.disabled = false;
                 printBtn.innerHTML = '<i class="bi bi-printer"></i>';
             });
+    });
+
+    // --- EMAIL MODAL LOGIC ---
+    const emailModal = document.getElementById('emailModal');
+    emailModal.addEventListener('show.bs.modal', function() {
+        document.getElementById('email-summary-company').textContent = brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '';
+        document.getElementById('email-summary-period').textContent = periodSelect.options[periodSelect.selectedIndex]?.text || '';
+        document.getElementById('email-summary-broker').textContent = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
+        document.getElementById('email-recipient').classList.remove('is-invalid');
+    });
+
+    document.getElementById('send-email-btn').addEventListener('click', function() {
+        const emailInput = document.getElementById('email-recipient');
+        const email = emailInput.value.trim();
+
+        if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            emailInput.classList.add('is-invalid');
+            return;
+        }
+        emailInput.classList.remove('is-invalid');
+
+        const sendBtn = this;
+        sendBtn.disabled = true;
+        sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generating PDF...';
+
+        const brokerId = brokerSelect.value;
+        const periodId = periodSelect.value;
+        const splitStatus = splitSelect.value;
+        const companyText = brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '';
+        const periodText = periodSelect.options[periodSelect.selectedIndex]?.text || '';
+        const brokerText = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
+        const splitText = splitSelect.options[splitSelect.selectedIndex]?.text || '';
+
+        fetch(`/api/broker_report/${brokerId}?compliance=Yes&split_status=${splitStatus}&period_id=${periodId}`)
+        .then(res => res.json())
+        .then(data => {
+            if (!Array.isArray(data) || data.length === 0) {
+                throw new Error('No compliant commission data found.');
+            }
+
+            const groupedData = new Map();
+            const grandTotals = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+            const zeroTemplate = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+            const sumFields = Object.keys(grandTotals);
+
+            data.forEach(item => {
+                const type = item.PolicyInsuranceType;
+                const insurer = item.PolicyInsurerName;
+                const nums = { AmntExcl: parseFloat(item.AmntExcl), CommAmntExcl: parseFloat(item.CommAmntExcl), ResCommAmnt: parseFloat(item.ResCommAmnt), CommPaidAmnt: parseFloat(item.CommPaidAmnt) };
+                if (!groupedData.has(type)) groupedData.set(type, { totals: { ...zeroTemplate }, byInsurer: new Map() });
+                const typeGroup = groupedData.get(type);
+                if (!typeGroup.byInsurer.has(insurer)) typeGroup.byInsurer.set(insurer, { totals: { ...zeroTemplate } });
+                const insurerGroup = typeGroup.byInsurer.get(insurer);
+                sumFields.forEach(key => { grandTotals[key] += nums[key]; typeGroup.totals[key] += nums[key]; insurerGroup.totals[key] += nums[key]; });
+            });
+
+            const now = new Date();
+            const nowStr = now.toLocaleDateString('en-ZA') + ' ' + now.toLocaleTimeString('en-ZA');
+            let rowsHtml = '';
+
+            groupedData.forEach((typeData, type) => {
+                rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; padding-left:4pt; background:#e9ecef; font-weight:bold; border-top:2px solid #999;"><strong>${type}</strong></td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.CommPaidAmnt)}</td></tr>`;
+                typeData.byInsurer.forEach((insurerData, insurer) => {
+                    rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; padding-left:16pt; background:#f5f5f5;">${insurer}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.CommPaidAmnt)}</td></tr>`;
+                });
+            });
+
+            rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt;"><strong>Grand Total</strong></td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.CommPaidAmnt)}</td></tr>`;
+
+            const htmlString = `<div style="font-family:Arial,sans-serif; font-size:9pt; color:#000; padding:20px; background:#fff;">
+                <h2 style="font-size:14pt; border-bottom:2px solid #000; padding-bottom:4pt; margin-bottom:4pt;">Broker Commission Report</h2>
+                <div style="font-size:8pt; color:#333; margin-bottom:8pt;">
+                    <span style="margin-right:20px;"><strong>Company:</strong> ${companyText}</span>
+                    <span style="margin-right:20px;"><strong>Period:</strong> ${periodText}</span>
+                    <span style="margin-right:20px;"><strong>Broker:</strong> ${brokerText}</span>
+                    <span style="margin-right:20px;"><strong>Compliance:</strong> Compliant Only</span><br>
+                    <span style="margin-right:20px;"><strong>Split Status:</strong> ${splitText}</span>
+                    <span><strong>Printed:</strong> ${nowStr}</span>
+                </div>
+                <table style="width:100%; table-layout:fixed; border-collapse:collapse; font-size:8pt;">
+                    <thead>
+                        <tr>
+                            <th width="40%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:left; border:1px solid #343a40; font-weight:600;">Row Labels</th>
+                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">AmntExcl</th>
+                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">CommAmntExcl</th>
+                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">ResCommAmnt</th>
+                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">CommPaidAmnt</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>`;
+
+            sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Sending...';
+
+            return fetch('/api/email_broker_report', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    html: htmlString,
+                    email: email,
+                    broker_name: brokerText,
+                    period_name: periodText
+                })
+            });
+        })
+        .then(res => res.json())
+        .then(data => {
+            bootstrap.Modal.getInstance(emailModal).hide();
+            if (data.success) {
+                Swal.fire('Sent!', data.message, 'success');
+            } else {
+                Swal.fire('Error', data.message, 'error');
+            }
+        })
+        .catch(error => {
+            bootstrap.Modal.getInstance(emailModal).hide();
+            Swal.fire('Error', `Failed to send email: ${error.message}`, 'error');
+        })
+        .finally(() => {
+            sendBtn.disabled = false;
+            sendBtn.innerHTML = '<i class="bi bi-send me-2"></i>Send Report';
+            emailInput.value = '';
+        });
     });
 
 

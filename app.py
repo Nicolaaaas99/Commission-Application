@@ -11,6 +11,12 @@ import logging
 import math
 import io
 import csv
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
+from xhtml2pdf import pisa
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -23,6 +29,12 @@ DB_NAME = os.environ.get('DB_NAME')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
 STAGING_TABLE = 'ZZImportStage'
+
+SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
+SMTP_USER = os.environ.get('SMTP_USER', '')
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
+SMTP_FROM = os.environ.get('SMTP_FROM', SMTP_USER)
 
 
 # --- Stored Procedure Names ---
@@ -951,6 +963,80 @@ def search_statements():
     except Exception as e:
         logging.error(f"Error searching statements: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/email_broker_report', methods=['POST'])
+def email_broker_report():
+    """Receives HTML content, converts to PDF server-side, and emails it."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "message": "Invalid request."}), 400
+
+    recipient = (data.get('email') or '').strip()
+    broker_name = data.get('broker_name', '')
+    period_name = data.get('period_name', '')
+    html_content = data.get('html', '')
+
+    if not recipient or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', recipient):
+        return jsonify({"success": False, "message": "Invalid email address."}), 400
+
+    if not html_content:
+        return jsonify({"success": False, "message": "No report content provided."}), 400
+
+    try:
+        # Wrap HTML in a full document for xhtml2pdf
+        full_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+    @page {{ size: A4 portrait; margin: 15mm; }}
+    body {{ font-family: Arial, sans-serif; font-size: 9pt; color: #000; }}
+    table {{ width: 100%; table-layout: fixed; border-collapse: collapse; }}
+</style>
+</head><body>{html_content}</body></html>"""
+
+        pdf_buffer = io.BytesIO()
+        pisa_status = pisa.CreatePDF(io.StringIO(full_html), dest=pdf_buffer)
+        if pisa_status.err:
+            return jsonify({"success": False, "message": "PDF generation failed."}), 500
+        pdf_bytes = pdf_buffer.getvalue()
+
+        safe_broker = re.sub(r'[^a-zA-Z0-9 \-]', '', broker_name).strip()
+        safe_period = re.sub(r'[^a-zA-Z0-9]', '', period_name).strip()
+        filename = f"Commission Report - {safe_broker} - {safe_period}.pdf"
+
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_FROM
+        msg['To'] = recipient
+        msg['Subject'] = f"Commission Report - {broker_name} - {period_name}"
+
+        body = f"Hi,\n\nPlease find attached the Broker Commission Report for {broker_name} (Period: {period_name}).\n\nThis report contains compliant policies only.\n\nRegards,\nCommission App"
+        msg.attach(MIMEText(body, 'plain'))
+
+        attachment = MIMEBase('application', 'pdf')
+        attachment.set_payload(pdf_bytes)
+        encoders.encode_base64(attachment)
+        attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(attachment)
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        logging.info(f"Commission report emailed to {recipient} for broker {broker_name}, period {period_name}")
+        return jsonify({"success": True, "message": f"Report emailed to {recipient} successfully."})
+
+    except smtplib.SMTPAuthenticationError:
+        logging.error("SMTP authentication failed.")
+        return jsonify({"success": False, "message": "Email authentication failed. Check SMTP credentials."}), 500
+    except smtplib.SMTPException as e:
+        logging.error(f"SMTP error sending email: {e}")
+        return jsonify({"success": False, "message": f"Failed to send email: {str(e)}"}), 500
+    except Exception as e:
+        logging.error(f"Error emailing broker report: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
