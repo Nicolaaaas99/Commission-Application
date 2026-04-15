@@ -29,10 +29,118 @@
         .toggle-icon { display: inline-block; }
 
         @media print {
-            body { display: block; }
-            #sidebar, #report-controls, #report-actions .btn { display: none; }
-            #content { padding: 0; }
-            .card { box-shadow: none !important; border: 1px solid #ccc; }
+            @page {
+                size: portrait;
+                margin: 12mm 10mm;
+            }
+            body {
+                display: block !important;
+                background: #fff !important;
+                font-size: 9pt;
+                color: #000 !important;
+            }
+            #sidebar, .nav-tabs, #reportTabContent > .tab-pane > .card:first-child,
+            #broker-report-actions, #print-btn,
+            .btn, .form-select, .form-label, .form-control,
+            .card-header:has(+ .card-body #broker-report-placeholder) {
+                display: none !important;
+            }
+            #content {
+                padding: 0 !important;
+                width: 100% !important;
+            }
+            .display-6.border-bottom { display: none !important; }
+            .card {
+                box-shadow: none !important;
+                border: none !important;
+                page-break-inside: auto;
+            }
+            .card-header { border: none !important; background: none !important; padding: 0 !important; }
+            .card-body { padding: 0 !important; }
+
+            /* Print report header */
+            #print-report-header {
+                display: block !important;
+                margin-bottom: 10pt;
+            }
+            #print-report-header h2 {
+                font-size: 14pt;
+                margin-bottom: 4pt;
+                border-bottom: 2px solid #000;
+                padding-bottom: 4pt;
+            }
+            #print-report-header .print-meta {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4pt 24pt;
+                font-size: 8pt;
+                color: #333;
+                margin-bottom: 8pt;
+            }
+
+            /* Show insurer rows (first level) but hide detail/policy rows */
+            .insurer-row.collapse:not(.show) { display: table-row !important; }
+            .detail-row { display: none !important; }
+
+            /* Table print styles */
+            .report-table {
+                width: 100% !important;
+                border-collapse: collapse;
+                font-size: 8pt;
+            }
+            .report-table thead th {
+                background-color: #343a40 !important;
+                color: #fff !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                padding: 5pt 6pt !important;
+                border: 1px solid #343a40 !important;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            .report-table tbody td {
+                padding: 3pt 6pt !important;
+                border: 1px solid #dee2e6 !important;
+                white-space: nowrap;
+            }
+            .report-table .mono {
+                font-family: 'Courier New', Courier, monospace;
+                font-size: 8pt;
+            }
+            .subtotal-row td {
+                background-color: #e9ecef !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                font-weight: bold !important;
+                border-top: 2px solid #999 !important;
+                border-bottom: 1px solid #999 !important;
+            }
+            .insurer-row td {
+                background-color: #f5f5f5 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+                font-weight: 500 !important;
+            }
+            .total-row td {
+                font-weight: bold !important;
+                border-top: 3px double #000 !important;
+                font-size: 9pt;
+            }
+            .insurer-row td:first-child { padding-left: 16pt !important; }
+            .subtotal-row td:first-child { padding-left: 4pt !important; }
+
+            /* Hide toggle icons and Policy Holder / Split % columns in print */
+            .toggle-icon { display: none !important; }
+            .report-table th:nth-child(2),
+            .report-table td:nth-child(2),
+            .report-table th:nth-child(3),
+            .report-table td:nth-child(3) {
+                display: none !important;
+            }
+
+            /* Page break management */
+            thead { display: table-header-group; }
+            tr { page-break-inside: avoid; }
         }
     </style>
 </head>
@@ -89,8 +197,8 @@
                             <div class="col-md-3">
                                 <label for="broker-compliance-select" class="form-label">Compliance Status:</label>
                                 <select id="broker-compliance-select" class="form-select">
-                                    <option value="All" selected>All Policies</option>
-                                    <option value="Yes">Compliant Only</option>
+                                    <option value="All">All Policies</option>
+                                    <option value="Yes" selected>Compliant Only</option>
                                     <option value="No">Non-Compliant Only</option>
                                 </select>
                             </div>
@@ -117,11 +225,22 @@
                             <h2 class="h4 mb-0">Report Results</h2>
                             <div id="broker-report-actions" class="d-none">
                                 <button class="btn btn-sm btn-outline-secondary" id="print-btn" title="Print Report"><i class="bi bi-printer"></i></button>
-                                <button class="btn btn-sm btn-outline-success" id="excel-btn" title="Export to Excel"><i class="bi bi-file-earmark-spreadsheet"></i></button>
                             </div>
                         </div>
                     </div>
                     <div class="card-body">
+                        <!-- Hidden print header: only visible when printing -->
+                        <div id="print-report-header" style="display: none;">
+                            <h2>Broker Commission Report</h2>
+                            <div class="print-meta">
+                                <span><strong>Company:</strong> <span id="print-company"></span></span>
+                                <span><strong>Period:</strong> <span id="print-period"></span></span>
+                                <span><strong>Broker:</strong> <span id="print-broker"></span></span>
+                                <span><strong>Compliance:</strong> <span id="print-compliance"></span></span>
+                                <span><strong>Split Status:</strong> <span id="print-split-status"></span></span>
+                                <span><strong>Printed:</strong> <span id="print-date"></span></span>
+                            </div>
+                        </div>
                         <div class="table-responsive">
                             <p class="text-center text-muted" id="broker-report-placeholder">Please select filters and click "Generate Report" to see the results.</p>
                             <table id="broker-report-table" class="table table-hover report-table d-none">
@@ -348,22 +467,29 @@ document.addEventListener('DOMContentLoaded', function () {
         html += renderRow('Grand Total', grandTotals, 'total-row');
         reportBody.innerHTML = html;
         
-        // --- IMPROVED: Click handler for plus/minus toggle ---
+        // --- Toggle icons via Bootstrap collapse events (reliable) ---
         document.querySelectorAll('.clickable-row').forEach(row => {
-            row.addEventListener('click', function() {
-                const icon = this.querySelector('.toggle-icon');
-                if (!icon) return;
-                
-                const isExpanded = this.getAttribute('aria-expanded') === 'true';
-                this.setAttribute('aria-expanded', !isExpanded);
-
-                if (!isExpanded) {
-                    icon.classList.remove('bi-plus-lg');
-                    icon.classList.add('bi-dash-lg');
-                } else {
-                    icon.classList.remove('bi-dash-lg');
-                    icon.classList.add('bi-plus-lg');
-                }
+            const targetClass = row.getAttribute('data-bs-target');
+            if (!targetClass) return;
+            // Listen to Bootstrap's shown/hidden events on the child elements
+            const children = document.querySelectorAll(targetClass);
+            children.forEach(child => {
+                child.addEventListener('shown.bs.collapse', function() {
+                    const icon = row.querySelector('.toggle-icon');
+                    if (icon) {
+                        icon.classList.remove('bi-plus-lg');
+                        icon.classList.add('bi-dash-lg');
+                    }
+                    row.setAttribute('aria-expanded', 'true');
+                });
+                child.addEventListener('hidden.bs.collapse', function() {
+                    const icon = row.querySelector('.toggle-icon');
+                    if (icon) {
+                        icon.classList.remove('bi-dash-lg');
+                        icon.classList.add('bi-plus-lg');
+                    }
+                    row.setAttribute('aria-expanded', 'false');
+                });
             });
         });
     }
@@ -388,8 +514,60 @@ document.addEventListener('DOMContentLoaded', function () {
             </tr>`;
     }
     
-    document.getElementById('print-btn').addEventListener('click', () => window.print());
-    document.getElementById('excel-btn').addEventListener('click', () => { /* Excel logic */ });
+    document.getElementById('print-btn').addEventListener('click', function() {
+        const brokerId = brokerSelect.value;
+        const periodId = periodSelect.value;
+        const splitStatus = splitSelect.value;
+
+        if (!brokerId || !periodId) return;
+
+        // Always re-fetch with compliance=Yes for the printed report
+        const printBtn = document.getElementById('print-btn');
+        printBtn.disabled = true;
+        printBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        fetch(`/api/broker_report/${brokerId}?compliance=Yes&split_status=${splitStatus}&period_id=${periodId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (!Array.isArray(data) || data.length === 0) {
+                    Swal.fire('No Data', 'No compliant commission data found for this selection.', 'info');
+                    return;
+                }
+
+                // Build the report with compliant-only data
+                buildInteractiveReport(data);
+
+                // Populate the print header
+                const companyText = brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '';
+                const periodText = periodSelect.options[periodSelect.selectedIndex]?.text || '';
+                const brokerText = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
+                const splitText = splitSelect.options[splitSelect.selectedIndex]?.text || '';
+
+                document.getElementById('print-company').textContent = companyText;
+                document.getElementById('print-period').textContent = periodText;
+                document.getElementById('print-broker').textContent = brokerText;
+                document.getElementById('print-compliance').textContent = 'Compliant Only';
+                document.getElementById('print-split-status').textContent = splitText;
+                document.getElementById('print-date').textContent = new Date().toLocaleDateString('en-ZA') + ' ' + new Date().toLocaleTimeString('en-ZA');
+
+                // Set document title for PDF filename
+                const originalTitle = document.title;
+                const safeBroker = brokerText.replace(/[^a-zA-Z0-9 \-]/g, '').trim();
+                const safePeriod = periodText.replace(/[^a-zA-Z0-9]/g, '').trim();
+                document.title = `Commission Report - ${safeBroker} - ${safePeriod}`;
+
+                window.print();
+
+                setTimeout(() => { document.title = originalTitle; }, 500);
+            })
+            .catch(error => {
+                Swal.fire('Error', `Could not generate compliant report: ${error.message}`, 'error');
+            })
+            .finally(() => {
+                printBtn.disabled = false;
+                printBtn.innerHTML = '<i class="bi bi-printer"></i>';
+            });
+    });
 
 
     // ###########################################################
