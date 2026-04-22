@@ -2,6 +2,7 @@
 
 import os
 import re
+import html as html_module
 from waitress import serve
 import pandas as pd
 import pyodbc
@@ -966,49 +967,207 @@ def search_statements():
 
 @app.route('/api/email_broker_report', methods=['POST'])
 def email_broker_report():
-    """Receives HTML content, converts to PDF server-side, and emails it."""
+    """Generates a PDF server-side with xhtml2pdf and emails it as an attachment."""
     data = request.get_json()
     if not data:
-        return jsonify({"success": False, "message": "Invalid request."}), 400
+        return jsonify({"success": False, "message": "Invalid request body."}), 400
 
     recipient = (data.get('email') or '').strip()
-    broker_name = data.get('broker_name', '')
+    broker_id = data.get('broker_id')
+    period_id = data.get('period_id', 0)
+    split_status = data.get('split_status', 'All')
+    report_type = data.get('report_type', 'Summary')
+    company_name = data.get('company_name', '')
     period_name = data.get('period_name', '')
-    html_content = data.get('html', '')
+    broker_name = data.get('broker_name', '')
+    split_status_text = data.get('split_status_text', '')
+    is_detailed = report_type == 'Detailed'
 
     if not recipient or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', recipient):
         return jsonify({"success": False, "message": "Invalid email address."}), 400
-
-    if not html_content:
-        return jsonify({"success": False, "message": "No report content provided."}), 400
+    if not broker_id or not period_id:
+        return jsonify({"success": False, "message": "Broker and period are required."}), 400
 
     try:
-        # Wrap HTML in a full document for xhtml2pdf
-        full_html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, 'Yes', split_status, int(period_id))
+        columns = [column[0] for column in cursor.description]
+        report_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        if not report_data:
+            return jsonify({"success": False, "message": "No compliant commission data found for this selection."}), 400
+
+        from collections import OrderedDict
+        grouped = OrderedDict()
+        grand = {'AmntExcl': 0.0, 'CommAmntExcl': 0.0, 'ResCommAmnt': 0.0, 'CommPaidAmnt': 0.0}
+
+        for item in report_data:
+            t = item['PolicyInsuranceType']
+            ins = item['PolicyInsurerName']
+            if t not in grouped:
+                grouped[t] = {'totals': dict(grand), 'insurers': OrderedDict()}
+            if ins not in grouped[t]['insurers']:
+                grouped[t]['insurers'][ins] = {'totals': dict(grand), 'policies': []}
+            for k in grand:
+                v = float(item.get(k) or 0)
+                grand[k] += v
+                grouped[t]['totals'][k] += v
+                grouped[t]['insurers'][ins]['totals'][k] += v
+            grouped[t]['insurers'][ins]['policies'].append(item)
+
+        def fmt(n):
+            return f"{float(n):,.2f}"
+
+        def esc(s):
+            return html_module.escape(str(s) if s is not None else '')
+
+        # xhtml2pdf only respects widths set on <td> cells, not on <th> or <colgroup>.
+        # Every cell carries an explicit width so the renderer has no choice.
+        # Detailed: 42+43+13+23+23+23+23 = 190mm  |  Summary: 82+27+27+27+27 = 190mm
+        if is_detailed:
+            wL, wH, wS, wN = '42mm', '43mm', '13mm', '23mm'
+            def _d_subtot(label, tot, bold=False):
+                lbl = f'<strong>{label}</strong>' if bold else label
+                return (f'<tr class="subtot">'
+                        f'<td class="lbl" style="width:{wL}">{lbl}</td>'
+                        f'<td style="width:{wH}"></td>'
+                        f'<td style="width:{wS}"></td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["AmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["CommAmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["ResCommAmnt"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["CommPaidAmnt"])}</td>'
+                        f'</tr>')
+            def _d_insurer(label, tot):
+                return (f'<tr class="insurer">'
+                        f'<td class="lbl ins" style="width:{wL}">{label}</td>'
+                        f'<td style="width:{wH}"></td>'
+                        f'<td style="width:{wS}"></td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["AmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["CommAmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["ResCommAmnt"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(tot["CommPaidAmnt"])}</td>'
+                        f'</tr>')
+            def _d_policy(p, sp_str):
+                return (f'<tr class="detail">'
+                        f'<td class="lbl det" style="width:{wL}">{esc(p.get("PolicyNumber",""))}</td>'
+                        f'<td class="txt" style="width:{wH}">{esc(p.get("PolicyHolder",""))}</td>'
+                        f'<td class="num" style="width:{wS}">{sp_str}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(p["AmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(p["CommAmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(p["ResCommAmnt"])}</td>'
+                        f'<td class="num" style="width:{wN}">{fmt(p["CommPaidAmnt"])}</td>'
+                        f'</tr>')
+        else:
+            wL, wN1, wN2, wN3, wN4 = '82mm', '27mm', '27mm', '27mm', '27mm'
+            def _s_subtot(label, tot, bold=False):
+                lbl = f'<strong>{label}</strong>' if bold else label
+                return (f'<tr class="subtot">'
+                        f'<td class="lbl" style="width:{wL}">{lbl}</td>'
+                        f'<td class="num" style="width:{wN1}">{fmt(tot["AmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN2}">{fmt(tot["CommAmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN3}">{fmt(tot["ResCommAmnt"])}</td>'
+                        f'<td class="num" style="width:{wN4}">{fmt(tot["CommPaidAmnt"])}</td>'
+                        f'</tr>')
+            def _s_insurer(label, tot):
+                return (f'<tr class="insurer">'
+                        f'<td class="lbl ins" style="width:{wL}">{label}</td>'
+                        f'<td class="num" style="width:{wN1}">{fmt(tot["AmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN2}">{fmt(tot["CommAmntExcl"])}</td>'
+                        f'<td class="num" style="width:{wN3}">{fmt(tot["ResCommAmnt"])}</td>'
+                        f'<td class="num" style="width:{wN4}">{fmt(tot["CommPaidAmnt"])}</td>'
+                        f'</tr>')
+
+        rows = []
+        for t, td in grouped.items():
+            if is_detailed:
+                rows.append(_d_subtot(esc(t), td['totals'], bold=True))
+                for ins, ind in td['insurers'].items():
+                    rows.append(_d_insurer(esc(ins), ind['totals']))
+                    for p in ind['policies']:
+                        sp = p.get('PolicySplitPercent')
+                        sp_str = f"{round(float(sp) * 100)}%" if sp else ''
+                        rows.append(_d_policy(p, sp_str))
+            else:
+                rows.append(_s_subtot(esc(t), td['totals'], bold=True))
+                for ins, ind in td['insurers'].items():
+                    rows.append(_s_insurer(esc(ins), ind['totals']))
+
+        if is_detailed:
+            rows.append(_d_subtot('Grand Total', grand, bold=True).replace('class="subtot"', 'class="total"'))
+            header = (f'<tr>'
+                      f'<th style="width:{wL};text-align:left">Row Labels</th>'
+                      f'<th style="width:{wH};text-align:left">Policy Holder</th>'
+                      f'<th style="width:{wS};text-align:right">Split %</th>'
+                      f'<th style="width:{wN};text-align:right">AmntExcl</th>'
+                      f'<th style="width:{wN};text-align:right">CommAmntExcl</th>'
+                      f'<th style="width:{wN};text-align:right">ResCommAmnt</th>'
+                      f'<th style="width:{wN};text-align:right">CommPaidAmnt</th>'
+                      f'</tr>')
+            font_size = '7pt'
+        else:
+            rows.append(_s_subtot('Grand Total', grand, bold=True).replace('class="subtot"', 'class="total"'))
+            header = (f'<tr>'
+                      f'<th style="width:{wL};text-align:left">Row Labels</th>'
+                      f'<th style="width:{wN1};text-align:right">AmntExcl</th>'
+                      f'<th style="width:{wN2};text-align:right">CommAmntExcl</th>'
+                      f'<th style="width:{wN3};text-align:right">ResCommAmnt</th>'
+                      f'<th style="width:{wN4};text-align:right">CommPaidAmnt</th>'
+                      f'</tr>')
+            font_size = '8pt'
+        colgroup = ''
+
+        from datetime import datetime
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        html_content = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
 <style>
-    @page {{ size: A4 portrait; margin: 15mm; }}
-    body {{ font-family: Arial, sans-serif; font-size: 9pt; color: #000; }}
-    table {{ width: 100%; table-layout: fixed; border-collapse: collapse; }}
-</style>
-</head><body>{html_content}</body></html>"""
+@page {{ size: A4 portrait; margin: 12mm 10mm; }}
+body {{ font-family: Helvetica, Arial, sans-serif; font-size: 9pt; color: #000; }}
+h2 {{ font-size: 13pt; margin: 0 0 4pt 0; padding-bottom: 3pt; border-bottom: 1.5pt solid #000; }}
+.meta {{ font-size: 8pt; color: #333; margin-bottom: 8pt; }}
+.meta p {{ margin: 2pt 0; }}
+table {{ width: 100%; border-collapse: collapse; font-size: {font_size}; }}
+th {{ background-color: #343a40; color: #fff; padding: 4pt 5pt; border: 0.5pt solid #555; font-weight: bold; overflow: hidden; }}
+td {{ padding: 3pt 5pt; border: 0.5pt solid #dee2e6; vertical-align: middle; overflow: hidden; }}
+td.num {{ text-align: right; font-family: Courier, monospace; white-space: nowrap; }}
+td.txt {{ word-wrap: break-word; word-break: break-word; }}
+tr.subtot td {{ background-color: #e9ecef; font-weight: bold; border-top: 1.5pt solid #999; }}
+tr.insurer td {{ background-color: #f5f5f5; }}
+tr.total td {{ border-top: 2pt solid #000; font-weight: bold; }}
+td.lbl {{ white-space: nowrap; overflow: hidden; }}
+td.ins {{ padding-left: 8pt; }}
+td.det {{ padding-left: 8pt; }}
+</style></head>
+<body>
+<h2>Broker Commission Report</h2>
+<div class="meta">
+<p><strong>Company:</strong> {esc(company_name)} &nbsp;&nbsp; <strong>Period:</strong> {esc(period_name)} &nbsp;&nbsp; <strong>Broker:</strong> {esc(broker_name)}</p>
+<p><strong>Compliance:</strong> Compliant Only &nbsp;&nbsp; <strong>Split Status:</strong> {esc(split_status_text)} &nbsp;&nbsp; <strong>Report Type:</strong> {esc(report_type)}</p>
+<p><strong>Generated:</strong> {now_str}</p>
+</div>
+<table>{colgroup}<thead>{header}</thead><tbody>{''.join(rows)}</tbody></table>
+</body></html>"""
 
         pdf_buffer = io.BytesIO()
-        pisa_status = pisa.CreatePDF(io.StringIO(full_html), dest=pdf_buffer)
-        if pisa_status.err:
-            return jsonify({"success": False, "message": "PDF generation failed."}), 500
+        result = pisa.CreatePDF(html_content, dest=pdf_buffer)
+        if result.err:
+            return jsonify({"success": False, "message": "Failed to generate PDF."}), 500
         pdf_bytes = pdf_buffer.getvalue()
 
+        type_suffix = 'Detailed' if is_detailed else 'Summary'
         safe_broker = re.sub(r'[^a-zA-Z0-9 \-]', '', broker_name).strip()
         safe_period = re.sub(r'[^a-zA-Z0-9]', '', period_name).strip()
-        filename = f"Commission Report - {safe_broker} - {safe_period}.pdf"
+        filename = f"Commission Report - {safe_broker} - {safe_period} - {type_suffix}.pdf"
 
         msg = MIMEMultipart()
         msg['From'] = SMTP_FROM
         msg['To'] = recipient
-        msg['Subject'] = f"Commission Report - {broker_name} - {period_name}"
+        msg['Subject'] = f"Commission Report ({type_suffix}) - {broker_name} - {period_name}"
 
-        body = f"Hi,\n\nPlease find attached the Broker Commission Report for {broker_name} (Period: {period_name}).\n\nThis report contains compliant policies only.\n\nRegards,\nCommission App"
+        detail_note = "This is the detailed report showing policy-level breakdowns." if is_detailed else "This is a summary report grouped by insurance type and insurer."
+        body = f"Hi,\n\nPlease find attached the Broker Commission Report for {broker_name} (Period: {period_name}).\n\n{detail_note}\nThis report contains compliant policies only.\n\nRegards,\nCommission App"
         msg.attach(MIMEText(body, 'plain'))
 
         attachment = MIMEBase('application', 'pdf')

@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.3/dist/html2pdf.bundle.min.js"></script>
     <style>
         body { display: flex; min-height: 100vh; background-color: #f8f9fa; }
         #sidebar { width: 280px; min-height: 100vh; background: #343a40; color: #fff; }
@@ -30,9 +31,10 @@
 
         @media print {
             @page {
-                size: portrait;
+                size: A4 portrait;
                 margin: 12mm 10mm;
             }
+            html, body { overflow: visible !important; height: auto !important; }
             body {
                 display: block !important;
                 background: #fff !important;
@@ -45,9 +47,15 @@
             .card-header:has(+ .card-body #broker-report-placeholder) {
                 display: none !important;
             }
+            /* Kill the horizontal scrollbar from .table-responsive in the print view */
+            .table-responsive {
+                overflow: visible !important;
+                overflow-x: visible !important;
+            }
             #content {
                 padding: 0 !important;
                 width: 100% !important;
+                overflow: visible !important;
             }
             .display-6.border-bottom { display: none !important; }
             .card {
@@ -85,6 +93,7 @@
             /* Table print styles */
             .report-table {
                 width: 100% !important;
+                table-layout: fixed !important;
                 border-collapse: collapse;
                 font-size: 8pt;
             }
@@ -97,11 +106,14 @@
                 border: 1px solid #343a40 !important;
                 font-weight: 600;
                 white-space: nowrap;
+                overflow: hidden;
             }
             .report-table tbody td {
                 padding: 3pt 6pt !important;
                 border: 1px solid #dee2e6 !important;
                 white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             .report-table .mono {
                 font-family: 'Courier New', Courier, monospace;
@@ -129,13 +141,53 @@
             .insurer-row td:first-child { padding-left: 16pt !important; }
             .subtotal-row td:first-child { padding-left: 4pt !important; }
 
-            /* Hide toggle icons and Policy Holder / Split % columns in print */
+            /* Hide toggle icons and Policy Holder / Split % columns in print (Summary) */
             .toggle-icon { display: none !important; }
             .report-table th:nth-child(2),
             .report-table td:nth-child(2),
             .report-table th:nth-child(3),
             .report-table td:nth-child(3) {
                 display: none !important;
+            }
+
+            /* Summary column widths (5 visible cols: Row Labels + 4 amounts) */
+            .report-table th:nth-child(1), .report-table td:nth-child(1) { width: 40%; }
+            .report-table th:nth-child(4), .report-table td:nth-child(4),
+            .report-table th:nth-child(5), .report-table td:nth-child(5),
+            .report-table th:nth-child(6), .report-table td:nth-child(6),
+            .report-table th:nth-child(7), .report-table td:nth-child(7) { width: 15%; }
+
+            /* Detailed mode: show detail rows and the Policy Holder / Split % columns */
+            body.print-detailed .detail-row,
+            body.print-detailed .detail-row.collapse:not(.show) {
+                display: table-row !important;
+            }
+            body.print-detailed .report-table th:nth-child(2),
+            body.print-detailed .report-table td:nth-child(2),
+            body.print-detailed .report-table th:nth-child(3),
+            body.print-detailed .report-table td:nth-child(3) {
+                display: table-cell !important;
+            }
+            body.print-detailed .detail-row td:first-child {
+                padding-left: 16pt !important;
+            }
+
+            /* Detailed column widths (all 7 cols visible, portrait A4 ~190mm) */
+            body.print-detailed .report-table { font-size: 7pt; }
+            body.print-detailed .report-table th:nth-child(1), body.print-detailed .report-table td:nth-child(1) { width: 15%; }
+            body.print-detailed .report-table th:nth-child(2), body.print-detailed .report-table td:nth-child(2) { width: 20%; }
+            body.print-detailed .report-table th:nth-child(3), body.print-detailed .report-table td:nth-child(3) { width: 9%; }
+            body.print-detailed .report-table th:nth-child(4), body.print-detailed .report-table td:nth-child(4),
+            body.print-detailed .report-table th:nth-child(5), body.print-detailed .report-table td:nth-child(5),
+            body.print-detailed .report-table th:nth-child(6), body.print-detailed .report-table td:nth-child(6),
+            body.print-detailed .report-table th:nth-child(7), body.print-detailed .report-table td:nth-child(7) { width: 14%; }
+
+            /* Allow text columns to wrap in Detailed mode */
+            body.print-detailed .report-table td:nth-child(1),
+            body.print-detailed .report-table td:nth-child(2) {
+                white-space: normal !important;
+                overflow-wrap: anywhere;
+                word-break: break-word;
             }
 
             /* Page break management */
@@ -211,6 +263,13 @@
                                 </select>
                             </div>
                             <div class="col-md-3">
+                                <label for="broker-report-type-select" class="form-label">Report Type:</label>
+                                <select id="broker-report-type-select" class="form-select">
+                                    <option value="Summary" selected>Summary</option>
+                                    <option value="Detailed">Detailed</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
                                 <button class="btn btn-primary w-100" id="generate-broker-report-btn" disabled>
                                     <i class="bi bi-file-earmark-text me-2"></i>Generate Report
                                 </button>
@@ -225,6 +284,7 @@
                             <h2 class="h4 mb-0">Report Results</h2>
                             <div id="broker-report-actions" class="d-none">
                                 <button class="btn btn-sm btn-outline-secondary" id="print-btn" title="Print Report"><i class="bi bi-printer"></i></button>
+                                <button class="btn btn-sm btn-outline-success" id="excel-btn" title="Download Excel"><i class="bi bi-file-earmark-excel"></i></button>
                                 <button class="btn btn-sm btn-outline-primary" id="email-btn" title="Email Report" data-bs-toggle="modal" data-bs-target="#emailModal"><i class="bi bi-envelope"></i></button>
                             </div>
                         </div>
@@ -239,6 +299,7 @@
                                 <span><strong>Broker:</strong> <span id="print-broker"></span></span>
                                 <span><strong>Compliance:</strong> <span id="print-compliance"></span></span>
                                 <span><strong>Split Status:</strong> <span id="print-split-status"></span></span>
+                                <span><strong>Report Type:</strong> <span id="print-report-type"></span></span>
                                 <span><strong>Printed:</strong> <span id="print-date"></span></span>
                             </div>
                         </div>
@@ -355,6 +416,7 @@
                         <div><strong>Company:</strong> <span id="email-summary-company"></span></div>
                         <div><strong>Period:</strong> <span id="email-summary-period"></span></div>
                         <div><strong>Broker:</strong> <span id="email-summary-broker"></span></div>
+                        <div><strong>Report Type:</strong> <span id="email-summary-report-type"></span></div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -379,11 +441,15 @@ document.addEventListener('DOMContentLoaded', function () {
     const brokerSelect = document.getElementById('broker-select');
     const complianceSelect = document.getElementById('broker-compliance-select');
     const splitSelect = document.getElementById('broker-split-select');
+    const reportTypeSelect = document.getElementById('broker-report-type-select');
     const generateBtn = document.getElementById('generate-broker-report-btn');
     const reportTable = document.getElementById('broker-report-table');
     const reportBody = document.getElementById('broker-report-body');
     const reportPlaceholder = document.getElementById('broker-report-placeholder');
     const reportActions = document.getElementById('broker-report-actions');
+
+    let currentReportData = null;
+    let currentReportMeta = {};
 
     fetch("/api/companies")
         .then(res => res.json())
@@ -448,6 +514,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
                 buildInteractiveReport(data);
+                currentReportData = data;
+                currentReportMeta = {
+                    company: brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '',
+                    period: periodSelect.options[periodSelect.selectedIndex]?.text || '',
+                    broker: brokerSelect.options[brokerSelect.selectedIndex]?.text || '',
+                    compliance: complianceSelect.options[complianceSelect.selectedIndex]?.text || '',
+                    splitStatus: splitSelect.options[splitSelect.selectedIndex]?.text || '',
+                    reportType: reportTypeSelect.value
+                };
                 reportPlaceholder.classList.add('d-none');
                 reportTable.classList.remove('d-none');
                 reportActions.classList.remove('d-none');
@@ -536,7 +611,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <tr class="${cssClass} ${clickableClass}" ${targetAttr}>
                 <td>${icon}${label}</td>
                 <td>${details.holder}</td>
-                <td class="mono">${details.split ? (details.split * 100).toFixed(2) + '%' : ''}</td>
+                <td class="mono">${details.split ? Math.round(details.split * 100) + '%' : ''}</td>
                 <td class="mono">${formatNumber(data.AmntExcl)}</td>
                 <td class="mono">${formatNumber(data.CommAmntExcl)}</td>
                 <td class="mono">${formatNumber(data.ResCommAmnt)}</td>
@@ -548,6 +623,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const brokerId = brokerSelect.value;
         const periodId = periodSelect.value;
         const splitStatus = splitSelect.value;
+        const reportType = reportTypeSelect.value;
 
         if (!brokerId || !periodId) return;
 
@@ -572,23 +648,34 @@ document.addEventListener('DOMContentLoaded', function () {
                 const periodText = periodSelect.options[periodSelect.selectedIndex]?.text || '';
                 const brokerText = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
                 const splitText = splitSelect.options[splitSelect.selectedIndex]?.text || '';
+                const reportTypeText = reportTypeSelect.options[reportTypeSelect.selectedIndex]?.text || 'Summary';
 
                 document.getElementById('print-company').textContent = companyText;
                 document.getElementById('print-period').textContent = periodText;
                 document.getElementById('print-broker').textContent = brokerText;
                 document.getElementById('print-compliance').textContent = 'Compliant Only';
                 document.getElementById('print-split-status').textContent = splitText;
+                document.getElementById('print-report-type').textContent = reportTypeText;
                 document.getElementById('print-date').textContent = new Date().toLocaleDateString('en-ZA') + ' ' + new Date().toLocaleTimeString('en-ZA');
 
                 // Set document title for PDF filename
                 const originalTitle = document.title;
                 const safeBroker = brokerText.replace(/[^a-zA-Z0-9 \-]/g, '').trim();
                 const safePeriod = periodText.replace(/[^a-zA-Z0-9]/g, '').trim();
-                document.title = `Commission Report - ${safeBroker} - ${safePeriod}`;
+                const typeSuffix = reportType === 'Detailed' ? 'Detailed' : 'Summary';
+                document.title = `Commission Report - ${safeBroker} - ${safePeriod} - ${typeSuffix}`;
+
+                // Detailed mode: reveal policy rows / extra columns via body class
+                if (reportType === 'Detailed') {
+                    document.body.classList.add('print-detailed');
+                }
 
                 window.print();
 
-                setTimeout(() => { document.title = originalTitle; }, 500);
+                setTimeout(() => {
+                    document.title = originalTitle;
+                    document.body.classList.remove('print-detailed');
+                }, 500);
             })
             .catch(error => {
                 Swal.fire('Error', `Could not generate compliant report: ${error.message}`, 'error');
@@ -599,12 +686,110 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     });
 
+    // --- EXCEL DOWNLOAD LOGIC ---
+    document.getElementById('excel-btn').addEventListener('click', function() {
+        if (!currentReportData || currentReportData.length === 0) return;
+
+        const isDetailed = currentReportMeta.reportType === 'Detailed';
+        const aoa = [];
+
+        // Metadata rows
+        aoa.push(['Broker Commission Report']);
+        aoa.push(['Company:', currentReportMeta.company, '', 'Period:', currentReportMeta.period, '', 'Broker:', currentReportMeta.broker]);
+        aoa.push(['Compliance:', currentReportMeta.compliance, '', 'Split Status:', currentReportMeta.splitStatus, '', 'Report Type:', isDetailed ? 'Detailed' : 'Summary']);
+        aoa.push(['Generated:', new Date().toLocaleString('en-ZA')]);
+        aoa.push([]);
+
+        // Header row
+        if (isDetailed) {
+            aoa.push(['Row Labels', 'Policy Holder', 'Split %', 'AmntExcl', 'CommAmntExcl', 'ResCommAmnt', 'CommPaidAmnt']);
+        } else {
+            aoa.push(['Row Labels', 'AmntExcl', 'CommAmntExcl', 'ResCommAmnt', 'CommPaidAmnt']);
+        }
+
+        // Group data
+        const groupedData = new Map();
+        const grandTotals = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+        const zeroTemplate = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
+        const sumFields = Object.keys(grandTotals);
+
+        currentReportData.forEach(item => {
+            const type = item.PolicyInsuranceType;
+            const insurer = item.PolicyInsurerName;
+            const nums = { AmntExcl: parseFloat(item.AmntExcl), CommAmntExcl: parseFloat(item.CommAmntExcl), ResCommAmnt: parseFloat(item.ResCommAmnt), CommPaidAmnt: parseFloat(item.CommPaidAmnt) };
+            if (!groupedData.has(type)) groupedData.set(type, { totals: { ...zeroTemplate }, byInsurer: new Map() });
+            const typeGroup = groupedData.get(type);
+            if (!typeGroup.byInsurer.has(insurer)) typeGroup.byInsurer.set(insurer, { totals: { ...zeroTemplate }, policies: [] });
+            const insurerGroup = typeGroup.byInsurer.get(insurer);
+            sumFields.forEach(key => { grandTotals[key] += nums[key]; typeGroup.totals[key] += nums[key]; insurerGroup.totals[key] += nums[key]; });
+            insurerGroup.policies.push(item);
+        });
+
+        groupedData.forEach((typeData, type) => {
+            if (isDetailed) {
+                aoa.push([type, '', '', typeData.totals.AmntExcl, typeData.totals.CommAmntExcl, typeData.totals.ResCommAmnt, typeData.totals.CommPaidAmnt]);
+            } else {
+                aoa.push([type, typeData.totals.AmntExcl, typeData.totals.CommAmntExcl, typeData.totals.ResCommAmnt, typeData.totals.CommPaidAmnt]);
+            }
+            typeData.byInsurer.forEach((insurerData, insurer) => {
+                if (isDetailed) {
+                    aoa.push(['  ' + insurer, '', '', insurerData.totals.AmntExcl, insurerData.totals.CommAmntExcl, insurerData.totals.ResCommAmnt, insurerData.totals.CommPaidAmnt]);
+                } else {
+                    aoa.push(['  ' + insurer, insurerData.totals.AmntExcl, insurerData.totals.CommAmntExcl, insurerData.totals.ResCommAmnt, insurerData.totals.CommPaidAmnt]);
+                }
+                if (isDetailed) {
+                    insurerData.policies.forEach(policy => {
+                        const splitPct = policy.PolicySplitPercent ? parseFloat(policy.PolicySplitPercent) : null;
+                        aoa.push(['    ' + (policy.PolicyNumber || ''), policy.PolicyHolder || '', splitPct, parseFloat(policy.AmntExcl), parseFloat(policy.CommAmntExcl), parseFloat(policy.ResCommAmnt), parseFloat(policy.CommPaidAmnt)]);
+                    });
+                }
+            });
+        });
+
+        if (isDetailed) {
+            aoa.push(['Grand Total', '', '', grandTotals.AmntExcl, grandTotals.CommAmntExcl, grandTotals.ResCommAmnt, grandTotals.CommPaidAmnt]);
+        } else {
+            aoa.push(['Grand Total', grandTotals.AmntExcl, grandTotals.CommAmntExcl, grandTotals.ResCommAmnt, grandTotals.CommPaidAmnt]);
+        }
+
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+        // Column widths
+        if (isDetailed) {
+            ws['!cols'] = [{ wch: 35 }, { wch: 25 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+        } else {
+            ws['!cols'] = [{ wch: 40 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+        }
+
+        // Apply number formats to currency and percentage cells
+        const numColIdxs = isDetailed ? [3, 4, 5, 6] : [1, 2, 3, 4];
+        aoa.forEach((row, r) => {
+            numColIdxs.forEach(c => {
+                const addr = XLSX.utils.encode_cell({ r, c });
+                if (ws[addr] && typeof ws[addr].v === 'number') ws[addr].z = '#,##0.00';
+            });
+            if (isDetailed) {
+                const splitAddr = XLSX.utils.encode_cell({ r, c: 2 });
+                if (ws[splitAddr] && typeof ws[splitAddr].v === 'number') ws[splitAddr].z = '0%';
+            }
+        });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Commission Report');
+
+        const safeBroker = currentReportMeta.broker.replace(/[^a-zA-Z0-9 \-]/g, '').trim();
+        const safePeriod = currentReportMeta.period.replace(/[^a-zA-Z0-9]/g, '').trim();
+        const typeSuffix = isDetailed ? 'Detailed' : 'Summary';
+        XLSX.writeFile(wb, `Commission Report - ${safeBroker} - ${safePeriod} - ${typeSuffix}.xlsx`);
+    });
+
     // --- EMAIL MODAL LOGIC ---
     const emailModal = document.getElementById('emailModal');
     emailModal.addEventListener('show.bs.modal', function() {
         document.getElementById('email-summary-company').textContent = brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '';
         document.getElementById('email-summary-period').textContent = periodSelect.options[periodSelect.selectedIndex]?.text || '';
         document.getElementById('email-summary-broker').textContent = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
+        document.getElementById('email-summary-report-type').textContent = reportTypeSelect.options[reportTypeSelect.selectedIndex]?.text || 'Summary';
         document.getElementById('email-recipient').classList.remove('is-invalid');
     });
 
@@ -620,88 +805,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const sendBtn = this;
         sendBtn.disabled = true;
-        sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generating PDF...';
+        sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generating & Sending...';
 
-        const brokerId = brokerSelect.value;
-        const periodId = periodSelect.value;
-        const splitStatus = splitSelect.value;
-        const companyText = brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '';
-        const periodText = periodSelect.options[periodSelect.selectedIndex]?.text || '';
-        const brokerText = brokerSelect.options[brokerSelect.selectedIndex]?.text || '';
-        const splitText = splitSelect.options[splitSelect.selectedIndex]?.text || '';
-
-        fetch(`/api/broker_report/${brokerId}?compliance=Yes&split_status=${splitStatus}&period_id=${periodId}`)
-        .then(res => res.json())
-        .then(data => {
-            if (!Array.isArray(data) || data.length === 0) {
-                throw new Error('No compliant commission data found.');
-            }
-
-            const groupedData = new Map();
-            const grandTotals = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
-            const zeroTemplate = { AmntExcl: 0, CommAmntExcl: 0, ResCommAmnt: 0, CommPaidAmnt: 0 };
-            const sumFields = Object.keys(grandTotals);
-
-            data.forEach(item => {
-                const type = item.PolicyInsuranceType;
-                const insurer = item.PolicyInsurerName;
-                const nums = { AmntExcl: parseFloat(item.AmntExcl), CommAmntExcl: parseFloat(item.CommAmntExcl), ResCommAmnt: parseFloat(item.ResCommAmnt), CommPaidAmnt: parseFloat(item.CommPaidAmnt) };
-                if (!groupedData.has(type)) groupedData.set(type, { totals: { ...zeroTemplate }, byInsurer: new Map() });
-                const typeGroup = groupedData.get(type);
-                if (!typeGroup.byInsurer.has(insurer)) typeGroup.byInsurer.set(insurer, { totals: { ...zeroTemplate } });
-                const insurerGroup = typeGroup.byInsurer.get(insurer);
-                sumFields.forEach(key => { grandTotals[key] += nums[key]; typeGroup.totals[key] += nums[key]; insurerGroup.totals[key] += nums[key]; });
-            });
-
-            const now = new Date();
-            const nowStr = now.toLocaleDateString('en-ZA') + ' ' + now.toLocaleTimeString('en-ZA');
-            let rowsHtml = '';
-
-            groupedData.forEach((typeData, type) => {
-                rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; padding-left:4pt; background:#e9ecef; font-weight:bold; border-top:2px solid #999;"><strong>${type}</strong></td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#e9ecef; font-weight:bold; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(typeData.totals.CommPaidAmnt)}</td></tr>`;
-                typeData.byInsurer.forEach((insurerData, insurer) => {
-                    rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; padding-left:16pt; background:#f5f5f5;">${insurer}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; background:#f5f5f5; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(insurerData.totals.CommPaidAmnt)}</td></tr>`;
-                });
-            });
-
-            rowsHtml += `<tr><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt;"><strong>Grand Total</strong></td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.AmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.CommAmntExcl)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.ResCommAmnt)}</td><td style="padding:3pt 6pt; border:1px solid #dee2e6; border-top:3px double #000; font-weight:bold; font-size:9pt; text-align:right; font-family:'Courier New',monospace; white-space:nowrap;">${formatNumber(grandTotals.CommPaidAmnt)}</td></tr>`;
-
-            const htmlString = `<div style="font-family:Arial,sans-serif; font-size:9pt; color:#000; padding:20px; background:#fff;">
-                <h2 style="font-size:14pt; border-bottom:2px solid #000; padding-bottom:4pt; margin-bottom:4pt;">Broker Commission Report</h2>
-                <div style="font-size:8pt; color:#333; margin-bottom:8pt;">
-                    <span style="margin-right:20px;"><strong>Company:</strong> ${companyText}</span>
-                    <span style="margin-right:20px;"><strong>Period:</strong> ${periodText}</span>
-                    <span style="margin-right:20px;"><strong>Broker:</strong> ${brokerText}</span>
-                    <span style="margin-right:20px;"><strong>Compliance:</strong> Compliant Only</span><br>
-                    <span style="margin-right:20px;"><strong>Split Status:</strong> ${splitText}</span>
-                    <span><strong>Printed:</strong> ${nowStr}</span>
-                </div>
-                <table style="width:100%; table-layout:fixed; border-collapse:collapse; font-size:8pt;">
-                    <thead>
-                        <tr>
-                            <th width="40%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:left; border:1px solid #343a40; font-weight:600;">Row Labels</th>
-                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">AmntExcl</th>
-                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">CommAmntExcl</th>
-                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">ResCommAmnt</th>
-                            <th width="15%" style="background:#343a40; color:#fff; padding:5pt 6pt; text-align:right; border:1px solid #343a40; font-weight:600; white-space:nowrap;">CommPaidAmnt</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rowsHtml}</tbody>
-                </table>
-            </div>`;
-
-            sendBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Sending...';
-
-            return fetch('/api/email_broker_report', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    html: htmlString,
-                    email: email,
-                    broker_name: brokerText,
-                    period_name: periodText
-                })
-            });
+        fetch('/api/email_broker_report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email,
+                broker_id: brokerSelect.value,
+                period_id: periodSelect.value,
+                split_status: splitSelect.value,
+                report_type: reportTypeSelect.value,
+                company_name: brokerCompanySelect.options[brokerCompanySelect.selectedIndex]?.text || '',
+                period_name: periodSelect.options[periodSelect.selectedIndex]?.text || '',
+                broker_name: brokerSelect.options[brokerSelect.selectedIndex]?.text || '',
+                split_status_text: splitSelect.options[splitSelect.selectedIndex]?.text || ''
+            })
         })
         .then(res => res.json())
         .then(data => {
