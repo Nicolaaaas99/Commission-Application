@@ -336,7 +336,7 @@
             <h1 class="display-6 border-bottom pb-2 mb-4">Create Sage 200 Batch</h1>
             <div class="card shadow-sm">
                 <div class="card-body">
-                    <p class="card-text">Select a commission statement to generate a CSV batch file for import or to void a previously generated batch.</p>
+                    <p class="card-text">Select a commission statement to preview its batch and post it directly to Evolution.</p>
                     
                     <div class="mb-3">
                         <label for="batch-statement-select" class="form-label">Unprocessed Statement:</label>
@@ -347,10 +347,7 @@
 
                     <div class="d-flex gap-2">
                         <button class="btn btn-success" id="create-batch-btn" disabled>
-                            <i class="bi bi-download me-2"></i>Create and Download Batch
-                        </button>
-                        <button class="btn btn-warning" id="void-batch-btn" disabled>
-                            <i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch
+                            <i class="bi bi-cloud-upload me-2"></i>Post to Evolution
                         </button>
                     </div>
                 </div>
@@ -430,8 +427,55 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" xintegrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
     <script>
+    // Shared helper: show a preview modal with the batch rows, return a Promise
+    // that resolves true if the user confirmed, false if they cancelled.
+    function previewBatchModal(title, rows) {
+        const fmt = n => Number(n).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const headerRows = `
+            <tr>
+                <th>Date</th><th>Account</th><th>Code</th><th>Reference</th>
+                <th>Description</th><th class="text-end">Amount (Incl)</th>
+                <th>Rep</th><th>Project</th><th>Contra</th>
+            </tr>`;
+        const bodyRows = rows.map(r => `
+            <tr>
+                <td>${esc(r.TransDate)}</td>
+                <td>${esc(r.Account)}</td>
+                <td><span class="badge bg-${r.TransCode==='IN'?'success':'warning'}">${esc(r.TransCode)}</span></td>
+                <td>${esc(r.Reference)}</td>
+                <td class="text-truncate" style="max-width:200px" title="${esc(r.Description)}">${esc(r.Description)}</td>
+                <td class="text-end mono-font">${fmt(r.AmountIncl)}</td>
+                <td>${esc(r.RepCode)}</td>
+                <td>${esc(r.ProjectCode)}</td>
+                <td class="small">${esc(r.ContraAccount)}</td>
+            </tr>`).join('');
+        const total = rows.reduce((s,r)=>s+Number(r.AmountIncl||0)*(r.TransCode==='IN'?1:-1), 0);
+        const html = `
+            <div class="text-start small">
+                <p class="mb-2"><strong>${rows.length}</strong> transaction(s) will be posted to Evolution. Net total:
+                    <strong class="${total>=0?'text-success':'text-danger'}">${fmt(total)}</strong></p>
+                <div style="max-height:50vh; overflow:auto; border:1px solid #dee2e6;">
+                    <table class="table table-sm table-striped table-hover mb-0" style="font-size:0.78rem">
+                        <thead class="table-dark sticky-top">${headerRows}</thead>
+                        <tbody>${bodyRows}</tbody>
+                    </table>
+                </div>
+            </div>`;
+        return Swal.fire({
+            title: title,
+            html: html,
+            width: '90%',
+            showCancelButton: true,
+            confirmButtonText: '<i class="bi bi-cloud-upload me-1"></i>Confirm & Post to Evolution',
+            cancelButtonText: 'Cancel',
+            confirmButtonColor: '#198754',
+            focusCancel: true,
+        }).then(r => r.isConfirmed);
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
-        
+
         let brokers = [];
         let insuranceTypes = [];
         const companySelect = document.getElementById('company');
@@ -1067,12 +1111,10 @@
 
         const batchStatementSelect = document.getElementById('batch-statement-select');
         const createBatchBtn = document.getElementById('create-batch-btn');
-        const voidBatchBtn = document.getElementById('void-batch-btn');
 
         function loadUnprocessedStatements() {
             batchStatementSelect.innerHTML = '<option value="" selected disabled>Loading statements...</option>';
             createBatchBtn.disabled = true;
-            voidBatchBtn.disabled = true;
 
             fetch('/api/unprocessed_statements')
                 .then(res => res.json())
@@ -1103,12 +1145,10 @@
         }
 
         batchStatementSelect.addEventListener('change', function() {
-            const isSelected = !!this.value;
-            createBatchBtn.disabled = !isSelected;
-            voidBatchBtn.disabled = !isSelected;
+            createBatchBtn.disabled = !this.value;
         });
 
-        createBatchBtn.addEventListener('click', function() {
+        createBatchBtn.addEventListener('click', async function() {
             const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
             if (!selectedOption || !selectedOption.value) {
                 Swal.fire('Missing Information', 'Please select a statement.', 'warning');
@@ -1120,79 +1160,41 @@
                 companyId: selectedOption.dataset.companyId,
                 insurerId: selectedOption.dataset.insurerId
             };
-            
-            Swal.fire({ title: 'Creating Batch...', didOpen: () => Swal.showLoading() });
-            fetch('/api/create_batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
-                    const link = document.createElement("a");
-                    const url = URL.createObjectURL(blob);
-                    link.setAttribute("href", url);
-                    const filename = `SageBatch_${selectedOption.dataset.reference}.csv`;
-                    link.setAttribute("download", filename);
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    Swal.fire('Success!', `Batch file ${filename} has been downloaded.`, 'success');
+
+            Swal.fire({ title: 'Loading preview...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+            try {
+                const previewRes = await fetch('/api/preview_batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const preview = await previewRes.json();
+                if (!preview.success) {
+                    Swal.fire('Error!', preview.message, 'error');
+                    return;
+                }
+                const confirmed = await previewBatchModal(
+                    `Preview: Statement ${selectedOption.dataset.reference}`,
+                    preview.rows
+                );
+                if (!confirmed) return;
+
+                Swal.fire({ title: 'Posting to Evolution...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+                const postRes = await fetch('/api/create_batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const post = await postRes.json();
+                if (post.success) {
+                    Swal.fire('Success!', `${post.posted} transaction(s) posted to Evolution for statement ${selectedOption.dataset.reference}.`, 'success');
                     loadUnprocessedStatements();
                 } else {
-                    Swal.fire('Error!', data.message, 'error');
+                    Swal.fire('Error!', post.message, 'error');
                 }
-            });
-        });
-
-         voidBatchBtn.addEventListener('click', function() {
-            const selectedOption = batchStatementSelect.options[batchStatementSelect.selectedIndex];
-            if (!selectedOption || !selectedOption.value) {
-                Swal.fire('Missing Information', 'Please select a statement.', 'warning');
-                return;
+            } catch (err) {
+                Swal.fire('Error!', `Unexpected error: ${err}`, 'error');
             }
-
-            Swal.fire({
-                title: 'Confirm Voiding Batch',
-                text: `This will reset the export status for statement "${selectedOption.dataset.reference}". This allows you to make corrections and re-export. Are you sure?`,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonText: 'Yes, void it!',
-                confirmButtonColor: '#dc3545'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    const payload = {
-                        stmntLink: selectedOption.value,
-                        companyId: selectedOption.dataset.companyId,
-                        insurerId: selectedOption.dataset.insurerId
-                    };
-
-                    voidBatchBtn.disabled = true;
-                    voidBatchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Voiding...';
-
-                    fetch('/api/void_batch', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            Swal.fire('Success!', data.message, 'success');
-                            loadUnprocessedStatements();
-                        } else {
-                            Swal.fire('Error!', data.message, 'error');
-                        }
-                    })
-                    .catch(error => Swal.fire('Error!', `An unexpected error occurred: ${error}`, 'error'))
-                    .finally(() => {
-                        voidBatchBtn.disabled = false;
-                        voidBatchBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-2"></i>Void Batch';
-                    });
-                }
-            });
         });
 
         // --- NEW Deferral Page Logic ---
@@ -1243,7 +1245,7 @@
                     <label for="swal-input-periods" class="form-label mt-2">Enter number of future periods to spread this amount over:</label>
                     <input id="swal-input-periods" class="swal2-input" type="number" min="2" max="24" placeholder="e.g., 12">
                 `,
-                confirmButtonText: 'Create Deferral & Download Batch',
+                confirmButtonText: 'Next: Preview Batch',
                 showCancelButton: true,
                 preConfirm: () => {
                     const numPeriods = document.getElementById('swal-input-periods').value;
@@ -1253,42 +1255,49 @@
                     }
                     return parseInt(numPeriods, 10);
                 }
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    const numPeriods = result.value;
-                    const payload = { policyLink, numPeriods };
-                    
-                    Swal.fire({ title: 'Processing Deferral...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+            }).then(async (result) => {
+                if (!result.isConfirmed) return;
+                const numPeriods = result.value;
+                const payload = { policyLink, numPeriods };
 
-                    fetch('/api/create_deferral_batch', {
+                Swal.fire({ title: 'Loading preview...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+                try {
+                    const previewRes = await fetch('/api/preview_deferral_batch', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            const blob = new Blob([data.csv_data], { type: 'text/csv;charset=utf-8;' });
-                            const link = document.createElement("a");
-                            const url = URL.createObjectURL(blob);
-                            link.setAttribute("href", url);
-                            const filename = `DeferralBatch_${policyNumber}.csv`;
-                            link.setAttribute("download", filename);
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            Swal.fire({
-                                title: 'Success!', 
-                                text: `Deferral created and batch file ${filename} has been downloaded.`, 
-                                icon: 'success'
-                            }).then(() => {
-                                // Refresh the list of lapsed policies
-                                deferralCompanySelect.dispatchEvent(new Event('change'));
-                            });
-                        } else {
-                            Swal.fire('Error!', data.message, 'error');
-                        }
                     });
+                    const preview = await previewRes.json();
+                    if (!preview.success) {
+                        Swal.fire('Error!', preview.message, 'error');
+                        return;
+                    }
+                    const confirmed = await previewBatchModal(
+                        `Preview: Deferral for ${policyNumber}`,
+                        preview.rows
+                    );
+                    if (!confirmed) return;
+
+                    Swal.fire({ title: 'Posting to Evolution...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+                    const postRes = await fetch('/api/create_deferral_batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const post = await postRes.json();
+                    if (post.success) {
+                        Swal.fire({
+                            title: 'Success!',
+                            text: `Deferral created for ${policyNumber}. ${post.posted} transaction(s) posted to Evolution.`,
+                            icon: 'success'
+                        }).then(() => {
+                            deferralCompanySelect.dispatchEvent(new Event('change'));
+                        });
+                    } else {
+                        Swal.fire('Error!', post.message, 'error');
+                    }
+                } catch (err) {
+                    Swal.fire('Error!', `Unexpected error: ${err}`, 'error');
                 }
             });
         });
@@ -1554,39 +1563,44 @@ createCorrBatchBtn.addEventListener('click', async () => {
             `,
             icon: 'question',
             showCancelButton: true,
-            confirmButtonText: 'Yes, Create Batch',
+            confirmButtonText: 'Next: Preview Batch',
             confirmButtonColor: '#198754'
         });
 
         if (!confirmResult.isConfirmed) return;
 
-        // --- STEP 4: ACTUAL PROCESSING ---
-        Swal.fire({ title: 'Processing...', didOpen: () => Swal.showLoading() });
+        // --- STEP 4: PREVIEW THE GENERATED BATCH ---
+        Swal.fire({ title: 'Loading preview...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+
+        const previewRes = await fetch('/api/preview_correction_batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ policyLink: selectedPolicyLink, transactions: transactions })
+        });
+        const preview = await previewRes.json();
+        if (!preview.success) {
+            Swal.fire('Error', preview.message, 'error');
+            return;
+        }
+        const confirmed = await previewBatchModal(
+            `Preview: Correction Batch`,
+            preview.rows
+        );
+        if (!confirmed) return;
+
+        // --- STEP 5: ACTUAL PROCESSING ---
+        Swal.fire({ title: 'Posting Correction to Evolution...', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
 
         const processRes = await fetch('/api/process_split_correction', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                policyLink: selectedPolicyLink,
-                transactions: transactions
-            })
+            body: JSON.stringify({ policyLink: selectedPolicyLink, transactions: transactions })
         });
-        
         const result = await processRes.json();
 
         if (result.success) {
-            // Download File
-            const blob = new Blob([result.csv_data], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement("a");
-            const url = URL.createObjectURL(blob);
-            link.setAttribute("href", url);
-            link.setAttribute("download", `CorrectionBatch_${selectedPolicyLink}.csv`);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            Swal.fire('Success', 'Batch downloaded successfully', 'success')
-                .then(() => corrSearchBtn.click()); // Refresh search results
+            Swal.fire('Success', `${result.posted} correction transaction(s) posted to Evolution.`, 'success')
+                .then(() => corrSearchBtn.click());
         } else {
             Swal.fire('Error', result.message, 'error');
         }

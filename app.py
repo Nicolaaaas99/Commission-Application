@@ -21,14 +21,16 @@ from xhtml2pdf import pisa
 from dotenv import load_dotenv
 load_dotenv()
 
+from evolution_sdk import post_ar_batch
+
 # --- CONFIG ---
 UPLOAD_FOLDER = 'Uploads'
 ALLOWED_EXTENSIONS = {'csv', 'xlsx'}
 
-DB_SERVER = os.environ.get('DB_SERVER')
+DB_SERVER = os.environ.get('DB_SERVER') or os.environ.get('EVO_SERVER')
 DB_NAME = os.environ.get('DB_NAME')
-DB_USER = os.environ.get('DB_USER')
-DB_PASSWORD = os.environ.get('DB_PASSWORD')
+DB_USER = os.environ.get('DB_USER') or os.environ.get('EVO_USERNAME')
+DB_PASSWORD = os.environ.get('DB_PASSWORD') or os.environ.get('EVO_PASSWORD')
 STAGING_TABLE = 'ZZImportStage'
 
 SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
@@ -142,6 +144,127 @@ def run_sp_with_results(sp_name, *params):
         logging.error(f"Error executing {sp_name} with results: {e}")
         conn.rollback()
         raise Exception(f"Database error in {sp_name}: {e}")
+
+
+def _fetch_batch_rows(cursor):
+    """Fetch the current cursor result-set as a list of dicts."""
+    columns = [c[0] for c in cursor.description]
+    return [dict(zip(columns, r)) for r in cursor.fetchall()]
+
+
+def _add_koste_adjustment(cursor, rows, stmnt_link):
+    """If the signed total of `rows` doesn't equal the statement's original
+    upload Incl (sum from CommStmntHistory), append one KOSTE line for the
+    difference so the batch posted to Evolution reconciles exactly.
+
+    Drift > 0 (rows under the upload) -> IN line for ABS(drift).
+    Drift < 0 (rows over the upload)  -> CN line for ABS(drift).
+    Drift = 0 -> no row appended."""
+    if not rows:
+        return rows
+
+    cursor.execute(
+        "SELECT ISNULL(SUM(HistCommIncl), 0) FROM CommStmntHistory WHERE HistStmntId = ?",
+        stmnt_link,
+    )
+    expected = float(cursor.fetchone()[0])
+    actual = sum(
+        (1.0 if r['TransCode'] == 'IN' else -1.0) * float(r['AmountIncl'])
+        for r in rows
+    )
+    drift = round(expected - actual, 2)
+    if abs(drift) < 0.005:
+        return rows
+
+    ref = rows[0]
+    rows.append({
+        'TransDate':     ref['TransDate'],
+        'Account':       ref['Account'],
+        'Module':        'AR',
+        'TransCode':     'IN' if drift > 0 else 'CN',
+        'Reference':     ref['Reference'],
+        'Description':   'Koste',
+        'OrderNumber':   'Koste',
+        'AmountExcl':    abs(drift),
+        'TaxType':       '03',
+        'AmountIncl':    abs(drift),
+        'ProjectCode':   'KOSTE',
+        'RepCode':       'KOSTE',
+        'ContraAccount': '4210>000-00.HOF',
+    })
+    return rows
+
+
+def preview_batch_rows(sp_executor):
+    """Run a batch SP inside a SQL transaction and ALWAYS rollback. Returns
+    (rows_or_None, error_message_or_None). No DB state changes from a preview."""
+    conn = get_db_connection()
+    conn.autocommit = False
+    try:
+        cursor = conn.cursor()
+        try:
+            rows = sp_executor(cursor)
+        except pyodbc.Error as e:
+            return None, str(e).split(']')[-1].strip()
+        return rows, None
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.autocommit = True
+
+
+def post_batch_via_sdk(sp_executor, action_label, batch_number=None, batch_description=None):
+    """Run a batch-producing stored procedure inside a SQL transaction, post its
+    rows to Evolution via the SDK as a single CustomerBatch, and only commit the
+    SP's side-effects (e.g. marking rows as exported) if the batch posts.
+
+    sp_executor(cursor) should EXEC the SP and return a list of dict rows.
+    Returns (response_dict, http_status).
+    """
+    conn = get_db_connection()
+    conn.autocommit = False
+    try:
+        cursor = conn.cursor()
+        try:
+            rows = sp_executor(cursor)
+        except pyodbc.Error as e:
+            conn.rollback()
+            msg = str(e).split(']')[-1].strip()
+            return {"success": False, "message": msg}, 500
+
+        if not rows:
+            conn.rollback()
+            return {"success": False, "message": "No data found to create a batch."}, 404
+
+        sdk_result = post_ar_batch(rows, batch_number=batch_number, batch_description=batch_description)
+        if not sdk_result['success']:
+            conn.rollback()
+            return {
+                "success": False,
+                "message": f"{action_label} failed in Evolution: {sdk_result['error']}",
+                "posted": sdk_result['posted'],
+            }, 500
+
+        conn.commit()
+        audit = sdk_result.get('audit')
+        return {
+            "success": True,
+            "message": f"{sdk_result['posted']} transaction(s) posted to Evolution"
+                       + (f" (audit {audit})" if audit else "") + ".",
+            "posted": sdk_result['posted'],
+            "audit": audit,
+        }, 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logging.error("%s error: %s", action_label, e)
+        return {"success": False, "message": str(e)}, 500
+    finally:
+        conn.autocommit = True
 
 
 def insert_to_staging(df):
@@ -601,9 +724,9 @@ def get_unprocessed_statements():
         logging.error(f"Error fetching unprocessed statements: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route('/api/create_batch', methods=['POST'])
-def create_batch():
-    """Creates a CSV batch file for a given statement."""
+@app.route('/api/preview_batch', methods=['POST'])
+def preview_batch():
+    """Returns the rows that would be posted, without touching DB or Evolution."""
     data = request.get_json()
     company_id = data.get('companyId')
     insurer_id = data.get('insurerId')
@@ -612,30 +735,54 @@ def create_batch():
     if not all([company_id, insurer_id, stmnt_link]):
         return jsonify({"success": False, "message": "Company ID, Insurer ID, and Statement Link are required."}), 400
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(1) FROM CommStmntHistSplit WHERE HistSplitStmntId = ? AND HistSplitBatchExported = 1", stmnt_link)
-        if cursor.fetchone()[0] > 0:
-            return jsonify({"success": False, "message": "This statement has already been exported."}), 400
-        
-        cursor.execute(f"EXEC {CREATE_BATCH_CSV_SP} ?, ?, ?", int(company_id), int(insurer_id), int(stmnt_link))
-        columns = [column[0] for column in cursor.description]
-        batch_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        conn.commit()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(1) FROM CommStmntHistSplit WHERE HistSplitStmntId = ? AND HistSplitBatchExported = 1", stmnt_link)
+    if cursor.fetchone()[0] > 0:
+        return jsonify({"success": False, "message": "This statement has already been exported."}), 400
 
-        if not batch_data:
-             return jsonify({"success": False, "message": "No data found to create a batch."}), 404
+    def run(c):
+        c.execute(f"EXEC {CREATE_BATCH_CSV_SP} ?, ?, ?", int(company_id), int(insurer_id), int(stmnt_link))
+        rows = _fetch_batch_rows(c)
+        return _add_koste_adjustment(c, rows, int(stmnt_link))
 
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(batch_data)
-        return jsonify({"success": True, "csv_data": output.getvalue()})
+    rows, err = preview_batch_rows(run)
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not rows:
+        return jsonify({"success": False, "message": "No data found to create a batch."}), 404
+    return jsonify({"success": True, "rows": rows})
 
-    except Exception as e:
-        logging.error(f"Error creating batch for statement link {stmnt_link}: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/create_batch', methods=['POST'])
+def create_batch():
+    """Posts a statement's commission batch directly into Evolution via the SDK."""
+    data = request.get_json()
+    company_id = data.get('companyId')
+    insurer_id = data.get('insurerId')
+    stmnt_link = data.get('stmntLink')
+
+    if not all([company_id, insurer_id, stmnt_link]):
+        return jsonify({"success": False, "message": "Company ID, Insurer ID, and Statement Link are required."}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(1) FROM CommStmntHistSplit WHERE HistSplitStmntId = ? AND HistSplitBatchExported = 1", stmnt_link)
+    if cursor.fetchone()[0] > 0:
+        return jsonify({"success": False, "message": "This statement has already been exported."}), 400
+
+    def run(c):
+        c.execute(f"EXEC {CREATE_BATCH_CSV_SP} ?, ?, ?", int(company_id), int(insurer_id), int(stmnt_link))
+        rows = _fetch_batch_rows(c)
+        return _add_koste_adjustment(c, rows, int(stmnt_link))
+
+    body, status = post_batch_via_sdk(
+        run,
+        f"Statement {stmnt_link} batch",
+        batch_number=f"STMT{stmnt_link}",
+        batch_description=f"Commission Statement {stmnt_link}",
+    )
+    return jsonify(body), status
 
 @app.route('/api/void_batch', methods=['POST'])
 def void_batch():
@@ -673,40 +820,51 @@ def get_lapsed_policies(company_id):
         logging.error(f"Error fetching lapsed policies: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
 
-@app.route('/api/create_deferral_batch', methods=['POST'])
-def create_deferral_batch():
-    """Creates deferral transactions and returns a CSV batch file."""
+@app.route('/api/preview_deferral_batch', methods=['POST'])
+def preview_deferral_batch():
+    """Returns the rows that would be posted, without persisting the deferral."""
     data = request.get_json()
     policy_link = data.get('policyLink')
     num_periods = data.get('numPeriods')
-    user_name = 'WebAppUser' # Can be replaced with actual user session later
+    user_name = 'WebAppUser'
 
     if not all([policy_link, num_periods]):
         return jsonify({"success": False, "message": "Policy Link and Number of Periods are required."}), 400
 
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"EXEC {CREATE_DEFERRAL_SP} ?, ?, ?", int(policy_link), int(num_periods), user_name)
-        
-        columns = [column[0] for column in cursor.description]
-        batch_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        conn.commit()
+    def run(c):
+        c.execute(f"EXEC {CREATE_DEFERRAL_SP} ?, ?, ?", int(policy_link), int(num_periods), user_name)
+        return _fetch_batch_rows(c)
 
-        if not batch_data:
-             return jsonify({"success": False, "message": "No data returned from deferral process. The policy might not have had any negative commission to defer."}), 404
+    rows, err = preview_batch_rows(run)
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not rows:
+        return jsonify({"success": False, "message": "No negative commission to defer for this policy."}), 404
+    return jsonify({"success": True, "rows": rows})
 
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(batch_data)
-        
-        return jsonify({"success": True, "csv_data": output.getvalue()})
 
-    except Exception as e:
-        friendly_message = str(e).split(']')[-1].strip()
-        logging.error(f"Error creating deferral for policy link {policy_link}: {friendly_message}")
-        return jsonify({"success": False, "message": friendly_message}), 500
+@app.route('/api/create_deferral_batch', methods=['POST'])
+def create_deferral_batch():
+    """Creates the deferral schedule and posts the resulting batch directly into Evolution."""
+    data = request.get_json()
+    policy_link = data.get('policyLink')
+    num_periods = data.get('numPeriods')
+    user_name = 'WebAppUser'
+
+    if not all([policy_link, num_periods]):
+        return jsonify({"success": False, "message": "Policy Link and Number of Periods are required."}), 400
+
+    def run(c):
+        c.execute(f"EXEC {CREATE_DEFERRAL_SP} ?, ?, ?", int(policy_link), int(num_periods), user_name)
+        return _fetch_batch_rows(c)
+
+    body, status = post_batch_via_sdk(
+        run,
+        f"Deferral for policy {policy_link}",
+        batch_number=f"DEF{policy_link}",
+        batch_description=f"Deferral - Policy {policy_link}",
+    )
+    return jsonify(body), status
 
 @app.route('/api/correction_history/<int:policy_link>')
 def get_correction_history(policy_link):
@@ -830,70 +988,60 @@ def preview_correction(policy_link, stmnt_id):
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-@app.route('/api/process_split_correction', methods=['POST'])
-def process_split_correction():
-    """1. Loops through selected transactions. 2. Runs sp_SplitCorrection for each. 3. Runs sp_CreateCorrectionBatchCSV to generate the file."""
+@app.route('/api/preview_correction_batch', methods=['POST'])
+def preview_correction_batch():
+    """Returns the correction rows that would be posted, without persisting anything."""
     data = request.get_json()
     policy_link = data.get('policyLink')
     transactions = data.get('transactions')
-    
+
     if not policy_link or not transactions:
         return jsonify({"success": False, "message": "Missing policy or transactions."}), 400
-    
-    conn = None
-    cursor = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # 1. Apply Logic: Reverse old, Insert new (using current split config)
+
+    stmnt_ids_csv = ",".join(str(t['stmntId']) for t in transactions)
+
+    def run(c):
         for item in transactions:
-            cursor.execute(f"EXEC {SPLIT_CORRECTION_SP} ?, ?, ?", 
-                          int(item['stmntId']), int(policy_link), int(item['periodLink']))
-        
-        # 2. Generate CSV: Selects the just-created unexported rows
-        stmnt_ids_csv = ",".join(str(t['stmntId']) for t in transactions)
-        cursor.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?, ?", int(policy_link), stmnt_ids_csv)
-        
-        # Fetch the data that was selected
-        batch_data = []
-        # Try to get results if any
-        try:
-            columns = [column[0] for column in cursor.description]
-            rows = cursor.fetchall()
-            batch_data = [dict(zip(columns, row)) for row in rows]
-        except Exception as fetch_err:
-            logging.warning(f"No rows returned from procedure: {fetch_err}")
-        
-        conn.commit()
-        
-        if not batch_data:
-            return jsonify({
-                "success": False, 
-                "message": "Correction applied, but no financial data generated for batch (amounts might be 0 or no unexported rows found)."
-            }), 404
-        
-        # 3. Return CSV File
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(batch_data)
-        
-        return jsonify({
-            "success": True, 
-            "csv_data": output.getvalue()
-        })
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logging.error(f"Error processing correction: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
-        
-    finally:
-        # Don't close the connection here - let Flask handle it
-        if cursor:
-            cursor.close()
+            c.execute(f"EXEC {SPLIT_CORRECTION_SP} ?, ?, ?",
+                      int(item['stmntId']), int(policy_link), int(item['periodLink']))
+        c.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?, ?", int(policy_link), stmnt_ids_csv)
+        return _fetch_batch_rows(c)
+
+    rows, err = preview_batch_rows(run)
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not rows:
+        return jsonify({"success": False, "message": "Correction would produce no financial data (amounts may be 0)."}), 404
+    return jsonify({"success": True, "rows": rows})
+
+
+@app.route('/api/process_split_correction', methods=['POST'])
+def process_split_correction():
+    """Applies split corrections (reverse old, insert new) and posts the resulting
+    correction batch directly into Evolution via the SDK."""
+    data = request.get_json()
+    policy_link = data.get('policyLink')
+    transactions = data.get('transactions')
+
+    if not policy_link or not transactions:
+        return jsonify({"success": False, "message": "Missing policy or transactions."}), 400
+
+    stmnt_ids_csv = ",".join(str(t['stmntId']) for t in transactions)
+
+    def run(c):
+        for item in transactions:
+            c.execute(f"EXEC {SPLIT_CORRECTION_SP} ?, ?, ?",
+                      int(item['stmntId']), int(policy_link), int(item['periodLink']))
+        c.execute(f"EXEC {CREATE_CORRECTION_CSV_SP} ?, ?", int(policy_link), stmnt_ids_csv)
+        return _fetch_batch_rows(c)
+
+    body, status = post_batch_via_sdk(
+        run,
+        f"Correction for policy {policy_link}",
+        batch_number=f"CORR{policy_link}",
+        batch_description=f"Split Correction - Policy {policy_link}",
+    )
+    return jsonify(body), status
 
 @app.route('/api/reverse_statement', methods=['POST'])
 def reverse_statement():
