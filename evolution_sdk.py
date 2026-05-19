@@ -43,6 +43,13 @@ def post_ar_batch(rows, batch_number=None, batch_description=None):
     if not rows:
         return {"success": False, "posted": 0, "audit": None, "error": "No rows to post."}
 
+    # Skip rows whose Inclusive amount rounds to zero — Evolution rejects
+    # them with "No amount specified on detail record" and they're no-ops
+    # in the customer ledger anyway.
+    rows = [r for r in rows if abs(float(r.get('AmountIncl') or 0)) >= 0.005]
+    if not rows:
+        return {"success": False, "posted": 0, "audit": None, "error": "All rows had zero amount; nothing to post."}
+
     with _post_lock:
         # Fresh SDK connection so this batch starts a new audit collection.
         reconnect()
