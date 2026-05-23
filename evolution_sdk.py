@@ -79,16 +79,16 @@ def post_ar_batch(rows, batch_number=None, batch_description=None):
                 d.IsDebit = (trans_code == 'IN')
 
                 d.Account = Customer(str(row['Account']))
-                # Truncate string fields conservatively to 40 chars to avoid
-                # SQL "String or binary data would be truncated" errors.
-                # (Evolution's documented column limits are larger but a
-                # related/internal table appears to enforce a tighter cap.)
-                d.Reference   = str(row.get('Reference')   or '')[:40]
+                # Truncate string fields to fit Evolution's column limits:
+                # Reference 20, OrderNumber 30, Description 40. Reference and
+                # OrderNumber match the source-side commission DB columns so
+                # downstream sync joins on Reference/Order_No still match.
+                d.Reference   = str(row.get('Reference')   or '')[:20]
                 d.Description = str(row.get('Description') or '')[:40]
 
                 order_num = row.get('OrderNumber')
                 if order_num not in (None, ''):
-                    d.OrderNumber = str(order_num)[:40]
+                    d.OrderNumber = str(order_num)[:30]
 
                 rep = row.get('RepCode')
                 if rep not in (None, ''):
