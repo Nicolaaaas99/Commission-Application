@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 # closed connection.
 _post_lock = threading.Lock()
 
+# Single named batch we reuse for every commission post. Evolution stores
+# the batch as a persistent entity; ClearAfterPost keeps it empty between
+# runs so it doesn't accumulate lines, and we add fresh details each time.
+SHARED_BATCH_NAME = "COMMISSION"
+
 
 def _parse_trans_date(value):
     """Convert a TransDate (dd/MM/yyyy string or date) into a .NET DateTime."""
@@ -58,17 +63,29 @@ def post_ar_batch(rows, batch_number=None, batch_description=None):
             SalesRepresentative, Project, TaxRate, TransactionCode, Module,
         )
 
-        if not batch_number:
-            import time
-            batch_number = f"COMM{int(time.time())}"
-
         try:
-            batch = CustomerBatch()
-            batch.BatchNo = str(batch_number)
+            # Reuse the single named batch in Evolution so the AR batches
+            # list doesn't accumulate one entry per post. If it doesn't
+            # exist yet (first-ever post), create + save it once.
+            try:
+                batch = CustomerBatch(SHARED_BATCH_NAME)
+            except Exception:
+                batch = CustomerBatch()
+                batch.BatchNo = SHARED_BATCH_NAME
+                batch.DefaultModule = BatchModule.AccountsReceivable
+                batch.AllowDuplicateReferences = True
+                batch.ClearAfterPost = True
+                batch.Save()
+                batch = CustomerBatch(SHARED_BATCH_NAME)
+
+            # Wipe any leftover details from a previous failed post so we
+            # don't accidentally re-post them, and re-assert settings.
+            batch.Detail.Clear()
+            batch.AllowDuplicateReferences = True
+            batch.ClearAfterPost = True
+            batch.DefaultModule = BatchModule.AccountsReceivable
             if batch_description:
                 batch.Description = str(batch_description)
-            batch.DefaultModule = BatchModule.AccountsReceivable
-            batch.AllowDuplicateReferences = True
 
             for idx, row in enumerate(rows, start=1):
                 d = BatchDetail()
