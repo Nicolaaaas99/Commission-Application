@@ -35,7 +35,7 @@ cursor.execute("""
         ABS(SPLIT.HistSplitCommIncl) AS AmountIncl,
         MAS.PolicyInsuranceType AS ProjectCode,
         BROK.ComBrokerCode AS RepCode,
-        CASE WHEN MAS.PolicyInsuranceType = 'KOSTE' THEN '4210>000-00.HOF'
+        CASE WHEN MAS.PolicyInsuranceType = 'KOSTE' THEN '4205'
              ELSE '1000>000-' + SPLIT.HistSplitBranch END AS ContraAccount
     FROM CommStmntHistSplit SPLIT
     JOIN CommPolicyMaster MAS ON MAS.PolicyLink = SPLIT.HistSplitPolicyLink

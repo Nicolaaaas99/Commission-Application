@@ -190,7 +190,7 @@ def _add_koste_adjustment(cursor, rows, stmnt_link):
         'AmountIncl':    abs(drift),
         'ProjectCode':   'KOSTE',
         'RepCode':       'KOSTE',
-        'ContraAccount': '4210>000-00.HOF',
+        'ContraAccount': '4205',
     })
     return rows
 
