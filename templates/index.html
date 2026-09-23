@@ -590,7 +590,7 @@
 
             Promise.all([
                 fetch(`/api/insurers/${companyId}`).then(res => res.json()),
-                fetch("{{ url_for('get_brokers') }}").then(res => res.json())
+                fetch(`/api/brokers?company_id=${companyId}`).then(res => res.json())
             ]).then(([insurers, brokerData]) => {
                 if(Array.isArray(insurers)) {
                     insurers.forEach(i => editInsurerSelect.add(new Option(i.name, i.id)));
@@ -598,6 +598,7 @@
                 editInsurerSelect.disabled = false;
 
                 if(Array.isArray(brokerData)) {
+                    brokers = brokerData;
                     brokerData.forEach(b => editBrokerSelect.add(new Option(b.name, b.id)));
                 }
                 editBrokerSelect.disabled = false;
@@ -712,18 +713,32 @@
         async function showConfigurationModal(policyData) {
             const isEditMode = policyData.isEdit === 'true';
             let initialSplits = [];
-            
+
             try {
-                const response = await fetch(`/api/get_policy_splits/${policyData.policyLink}`);
-                const data = await response.json();
-                if (data.success === false) {
-                    console.error("Could not fetch existing splits:", data.message);
+                const [splitsResp, typesResp, brokersResp] = await Promise.all([
+                    fetch(`/api/get_policy_splits/${policyData.policyLink}`),
+                    fetch(`/api/insurance_types?policy_link=${policyData.policyLink}`),
+                    fetch(`/api/brokers?policy_link=${policyData.policyLink}`)
+                ]);
+                const splitsData = await splitsResp.json();
+                const typesData = await typesResp.json();
+                const brokersData = await brokersResp.json();
+
+                if (splitsData.success === false) {
+                    console.error("Could not fetch existing splits:", splitsData.message);
                     initialSplits = [];
                 } else {
-                    initialSplits = data;
+                    initialSplits = splitsData;
+                }
+
+                if (Array.isArray(typesData)) {
+                    insuranceTypes = typesData;
+                }
+                if (Array.isArray(brokersData)) {
+                    brokers = brokersData;
                 }
             } catch (error) {
-                Swal.fire('Error', `A network error occurred while fetching policy splits: ${error.message}`, 'error');
+                Swal.fire('Error', `A network error occurred while fetching policy data: ${error.message}`, 'error');
                 return;
             }
 
@@ -846,10 +861,25 @@
         }
                 
         if(bulkConfigureBtn) {
-            bulkConfigureBtn.addEventListener('click', () => {
+            bulkConfigureBtn.addEventListener('click', async () => {
                 const checkedBoxes = actionPoliciesBody.querySelectorAll('.policy-checkbox:checked');
                 const policyIds = Array.from(checkedBoxes).map(cb => parseInt(cb.value, 10));
-                
+
+                if (policyIds.length === 0) return;
+
+                try {
+                    const [typesResp, brokersResp] = await Promise.all([
+                        fetch(`/api/insurance_types?policy_link=${policyIds[0]}`),
+                        fetch(`/api/brokers?policy_link=${policyIds[0]}`)
+                    ]);
+                    const typesData = await typesResp.json();
+                    const brokersData = await brokersResp.json();
+                    if (Array.isArray(typesData)) insuranceTypes = typesData;
+                    if (Array.isArray(brokersData)) brokers = brokersData;
+                } catch (e) {
+                    console.error('Could not load insurance types or brokers for bulk configure:', e);
+                }
+
                 Swal.fire({
                     title: `Bulk Configure ${policyIds.length} Policies`,
                     html: `

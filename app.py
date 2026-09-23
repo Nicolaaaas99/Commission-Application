@@ -434,9 +434,27 @@ def get_payments(company_id, insurer_link):
 
 @app.route('/api/brokers')
 def get_brokers():
+    company_id = request.args.get('company_id', type=int)
+    policy_link = request.args.get('policy_link', type=int)
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT SalesRepId, SalesRepCodeName FROM _uvCommSalesRep WHERE Rep_On_Hold = 'N' ORDER BY SalesRepCodeName")
+
+    if not company_id and policy_link:
+        cursor.execute("SELECT PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink = ?", policy_link)
+        row = cursor.fetchone()
+        if row:
+            company_id = int(row[0])
+
+    if company_id:
+        cursor.execute(
+            "SELECT DISTINCT SalesRepId, SalesRepCodeName FROM _uvCommSalesRep "
+            "WHERE Rep_On_Hold = 'N' AND ComBrokerCompanyId = ? "
+            "ORDER BY SalesRepCodeName",
+            company_id)
+    else:
+        cursor.execute("SELECT DISTINCT SalesRepId, SalesRepCodeName FROM _uvCommSalesRep WHERE Rep_On_Hold = 'N' ORDER BY SalesRepCodeName")
+
     brokers = [{"id": row.SalesRepId, "name": row.SalesRepCodeName} for row in cursor.fetchall()]
     return jsonify(brokers)
 
@@ -479,9 +497,26 @@ def get_split_history_report():
 
 @app.route('/api/insurance_types')
 def get_insurance_types():
+    company_id = request.args.get('company_id', type=int)
+    policy_link = request.args.get('policy_link', type=int)
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT InsuranceTypeLink, InsuranceTypeName FROM [dbo].[_uvCommInsuranceTypes] ORDER BY InsuranceTypeName")
+
+    if not company_id and policy_link:
+        cursor.execute("SELECT PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink = ?", policy_link)
+        row = cursor.fetchone()
+        if row:
+            company_id = int(row[0])
+
+    if company_id:
+        cursor.execute(
+            "SELECT InsuranceTypeLink, InsuranceTypeName FROM [dbo].[_uvCommInsuranceTypes] "
+            "WHERE InsuranceTypeCompany = ? ORDER BY InsuranceTypeName",
+            company_id)
+    else:
+        cursor.execute("SELECT InsuranceTypeLink, InsuranceTypeName FROM [dbo].[_uvCommInsuranceTypes] ORDER BY InsuranceTypeName")
+
     types = [{"id": row.InsuranceTypeLink, "name": row.InsuranceTypeName} for row in cursor.fetchall()]
     return jsonify(types)
 
@@ -574,11 +609,25 @@ def bulk_save_splits():
         conn.commit()
 
         if compliance in ('Yes','No') or insurance_type_id:
+            # sp_UpdatePolicyInsuranceType needs CompanyId to resolve the insurance-type code
+            # from _uvCommInsuranceTypes, so batch-fetch each policy's company up front.
+            policy_company_map = {}
+            if insurance_type_id:
+                placeholders = ",".join("?" * len(policy_ids))
+                cursor.execute(
+                    f"SELECT PolicyLink, PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink IN ({placeholders})",
+                    *(int(p) for p in policy_ids)
+                )
+                policy_company_map = {int(row.PolicyLink): int(row.PolicyCompanyId) for row in cursor.fetchall()}
+
             for pid in policy_ids:
                 if compliance in ('Yes','No'):
                     cursor.execute("EXEC sp_UpdatePolicyCompliance ?, ?", int(pid), compliance)
                 if insurance_type_id:
-                    cursor.execute("EXEC sp_UpdatePolicyInsuranceType ?, ?", int(pid), int(insurance_type_id))
+                    company_id = policy_company_map.get(int(pid))
+                    if company_id is None:
+                        return jsonify({"success": False, "message": f"Could not resolve company for policy {pid}."}), 400
+                    cursor.execute("EXEC sp_UpdatePolicyInsuranceType ?, ?, ?", company_id, int(pid), int(insurance_type_id))
             conn.commit()
 
         cursor.execute("EXEC sp_InsertCommStmntHistSplit")
@@ -600,9 +649,16 @@ def save_insurance_type():
 
     if not all([policy_id, type_id]):
         return jsonify({"success": False, "message": "Missing policy or insurance type ID."}), 400
-    
+
     try:
-        run_sp(UPDATE_INSURANCE_TYPE_SP, int(policy_id), int(type_id))
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink = ?", int(policy_id))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"success": False, "message": "Policy not found."}), 400
+        company_id = int(row[0])
+        run_sp(UPDATE_INSURANCE_TYPE_SP, company_id, int(policy_id), int(type_id))
         return jsonify({"success": True, "message": "Insurance type saved successfully!"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -676,18 +732,20 @@ def cancel_commission_run():
 
 @app.route('/api/broker_report/<int:broker_id>')
 def get_broker_report(broker_id):
+    company_id = request.args.get('company_id', type=int)
     compliance_status = request.args.get('compliance', 'All')
     split_status = request.args.get('split_status', 'All')
-    period_id = request.args.get('period_id', 0, type=int) 
+    period_id = request.args.get('period_id', 0, type=int)
 
     if broker_id is None: return jsonify({"success": False, "message": "Broker ID is required."}), 400
+    if not company_id: return jsonify({"success": False, "message": "Company ID is required."}), 400
     if compliance_status not in ['Yes', 'No', 'All']: return jsonify({"success": False, "message": "Invalid compliance status."}), 400
     if split_status not in ['Split', 'Non-Split', 'All']: return jsonify({"success": False, "message": "Invalid split status."}), 400
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, compliance_status, split_status, period_id)
+        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?, ?", company_id, broker_id, compliance_status, split_status, period_id)
         columns = [column[0] for column in cursor.description]
         report_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return jsonify(report_data)
@@ -892,21 +950,23 @@ def get_correction_history(policy_link):
                 /* --- Aggregated, de-duplicated split details --- */
                 (
                     SELECT STUFF((
-                        SELECT ', ' 
-                            + B2.ComBrokerCode 
-                            + ':' 
-                            + CAST(CAST(S2.HistSplitPercent * 100 AS INT) AS VARCHAR(10)) 
+                        SELECT ', '
+                            + B2.ComBrokerCode
+                            + ':'
+                            + CAST(CAST(S2.HistSplitPercent * 100 AS INT) AS VARCHAR(10))
                             + '%'
                         FROM (
-                            SELECT DISTINCT 
-                                HistSplitBrokerLink, 
+                            SELECT DISTINCT
+                                HistSplitCompanyLink,
+                                HistSplitBrokerLink,
                                 HistSplitPercent
                             FROM CommStmntHistSplit
                             WHERE HistSplitStmntId   = S.HistSplitStmntId
                             AND HistSplitPolicyLink = S.HistSplitPolicyLink
                         ) S2
                         JOIN _uvCommBroker B2
-                            ON S2.HistSplitBrokerLink = B2.ComBrokerEvoRepId
+                            ON  S2.HistSplitBrokerLink  = B2.ComBrokerEvoRepId
+                            AND S2.HistSplitCompanyLink = B2.ComBrokerCompanyId
                         FOR XML PATH(''), TYPE
                     ).value('.', 'NVARCHAR(MAX)'), 1, 2, '')
                 ) AS SplitDetails
@@ -1121,6 +1181,7 @@ def email_broker_report():
         return jsonify({"success": False, "message": "Invalid request body."}), 400
 
     recipient = (data.get('email') or '').strip()
+    company_id = data.get('company_id')
     broker_id = data.get('broker_id')
     period_id = data.get('period_id', 0)
     split_status = data.get('split_status', 'All')
@@ -1133,13 +1194,13 @@ def email_broker_report():
 
     if not recipient or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', recipient):
         return jsonify({"success": False, "message": "Invalid email address."}), 400
-    if not broker_id or not period_id:
-        return jsonify({"success": False, "message": "Broker and period are required."}), 400
+    if not company_id or not broker_id or not period_id:
+        return jsonify({"success": False, "message": "Company, broker and period are required."}), 400
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?", broker_id, 'Yes', split_status, int(period_id))
+        cursor.execute(f"EXEC {GET_BROKER_REPORT_SP} ?, ?, ?, ?, ?", int(company_id), int(broker_id), 'Yes', split_status, int(period_id))
         columns = [column[0] for column in cursor.description]
         report_data = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
