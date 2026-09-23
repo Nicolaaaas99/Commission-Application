@@ -66,14 +66,19 @@ def connect():
             DatabaseContext.CurrentAgent = Agent(str(agent_code))
 
 
-def reconnect():
+def reconnect(database_name=None):
     """Close and reopen the SDK connections. Mirrors what an app process
     restart does, which Evolution treats as starting a new audit-number
     collection (so each batch gets its own '24583.NNNN' style prefix
-    instead of all sharing one prefix). Use before each batch post."""
+    instead of all sharing one prefix). Use before each batch post.
+
+    If database_name is provided, connect to that Evolution company DB
+    instead of the default config.COMPANY_DATABASE."""
     with _lock:
         _load_dll()
         from Pastel.Evolution import DatabaseContext
+
+        target_db = database_name or config.COMPANY_DATABASE
 
         # Close existing connections so SQL Server sees a clean re-open.
         for attr in ('DBConnection', 'CommonDBConnection'):
@@ -92,7 +97,7 @@ def reconnect():
             config.USERNAME, config.PASSWORD, False)
         DatabaseContext.SetLicense(config.LICENSE_KEY, config.LICENSE_CODE)
         DatabaseContext.CreateConnection(
-            config.SERVER, config.COMPANY_DATABASE,
+            config.SERVER, target_db,
             config.USERNAME, config.PASSWORD, False)
 
         agent_code = getattr(config, 'AGENT_CODE', None)

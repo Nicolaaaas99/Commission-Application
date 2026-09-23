@@ -13,3 +13,18 @@ PASSWORD = os.environ.get('EVO_PASSWORD')
 LICENSE_KEY = os.environ.get('EVO_LICENSE_KEY')
 LICENSE_CODE = os.environ.get('EVO_LICENSE_CODE')
 AGENT_CODE = os.environ.get('EVO_AGENT_CODE')
+
+COMPANY_DATABASES = {
+    1: 'Anderson',
+    2: 'NAI_Life',
+    3: 'NAI_MedicalAid',
+    4: 'NAI_ShortTerm',
+}
+
+
+def get_company_database(company_id):
+    """Resolve a company_id to its Evolution database name."""
+    db = COMPANY_DATABASES.get(int(company_id))
+    if not db:
+        raise ValueError(f"No Evolution database configured for company_id {company_id}")
+    return db

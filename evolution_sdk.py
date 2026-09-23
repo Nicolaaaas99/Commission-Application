@@ -5,6 +5,7 @@ suffixes, and batch.Process() commits atomically (all rows or none)."""
 import logging
 import threading
 from connection import reconnect
+from config import get_company_database
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,16 @@ def _parse_trans_date(value):
     return DateTime(year, month, day)
 
 
-def post_ar_batch(rows, batch_number=None, batch_description=None):
+def post_ar_batch(rows, batch_number=None, batch_description=None, company_id=None):
     """Post a batch of AR transaction rows to Evolution as a single CustomerBatch.
 
     Each row is a dict from one of the batch SPs and must contain:
       TransDate, Account, TransCode (IN/CN), Reference, Description,
       OrderNumber, AmountExcl, TaxType, AmountIncl, ProjectCode, RepCode,
       ContraAccount.
+
+    company_id selects the Evolution database to post into (via config.COMPANY_DATABASES).
+    If omitted, falls back to config.COMPANY_DATABASE.
 
     Atomic: every line posts together or none do. Returns the audit string
     (e.g. '24585') — each line in Evolution will carry that prefix with a
@@ -55,9 +59,11 @@ def post_ar_batch(rows, batch_number=None, batch_description=None):
     if not rows:
         return {"success": False, "posted": 0, "audit": None, "error": "All rows had zero amount; nothing to post."}
 
+    target_db = get_company_database(company_id) if company_id is not None else None
+
     with _post_lock:
         # Fresh SDK connection so this batch starts a new audit collection.
-        reconnect()
+        reconnect(target_db)
         from Pastel.Evolution import (
             CustomerBatch, BatchDetail, BatchModule, Customer, GLAccount,
             SalesRepresentative, Project, TaxRate, TransactionCode, Module,

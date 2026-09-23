@@ -215,12 +215,13 @@ def preview_batch_rows(sp_executor):
         conn.autocommit = True
 
 
-def post_batch_via_sdk(sp_executor, action_label, batch_number=None, batch_description=None):
+def post_batch_via_sdk(sp_executor, action_label, batch_number=None, batch_description=None, company_id=None):
     """Run a batch-producing stored procedure inside a SQL transaction, post its
     rows to Evolution via the SDK as a single CustomerBatch, and only commit the
     SP's side-effects (e.g. marking rows as exported) if the batch posts.
 
     sp_executor(cursor) should EXEC the SP and return a list of dict rows.
+    company_id routes the SDK post to the correct Evolution database.
     Returns (response_dict, http_status).
     """
     conn = get_db_connection()
@@ -238,7 +239,7 @@ def post_batch_via_sdk(sp_executor, action_label, batch_number=None, batch_descr
             conn.rollback()
             return {"success": False, "message": "No data found to create a batch."}, 404
 
-        sdk_result = post_ar_batch(rows, batch_number=batch_number, batch_description=batch_description)
+        sdk_result = post_ar_batch(rows, batch_number=batch_number, batch_description=batch_description, company_id=company_id)
         if not sdk_result['success']:
             conn.rollback()
             return {
@@ -839,6 +840,7 @@ def create_batch():
         f"Statement {stmnt_link} batch",
         batch_number=f"STMT{stmnt_link}",
         batch_description=f"Commission Statement {stmnt_link}",
+        company_id=int(company_id),
     )
     return jsonify(body), status
 
@@ -912,6 +914,14 @@ def create_deferral_batch():
     if not all([policy_link, num_periods]):
         return jsonify({"success": False, "message": "Policy Link and Number of Periods are required."}), 400
 
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink = ?", int(policy_link))
+    row = cursor.fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "Policy not found."}), 400
+    company_id = int(row[0])
+
     def run(c):
         c.execute(f"EXEC {CREATE_DEFERRAL_SP} ?, ?, ?", int(policy_link), int(num_periods), user_name)
         return _fetch_batch_rows(c)
@@ -921,6 +931,7 @@ def create_deferral_batch():
         f"Deferral for policy {policy_link}",
         batch_number=f"DEF{policy_link}",
         batch_description=f"Deferral - Policy {policy_link}",
+        company_id=company_id,
     )
     return jsonify(body), status
 
@@ -1088,6 +1099,14 @@ def process_split_correction():
 
     stmnt_ids_csv = ",".join(str(t['stmntId']) for t in transactions)
 
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT PolicyCompanyId FROM dbo.CommPolicyMaster WHERE PolicyLink = ?", int(policy_link))
+    row = cursor.fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "Policy not found."}), 400
+    company_id = int(row[0])
+
     def run(c):
         for item in transactions:
             c.execute(f"EXEC {SPLIT_CORRECTION_SP} ?, ?, ?",
@@ -1100,6 +1119,7 @@ def process_split_correction():
         f"Correction for policy {policy_link}",
         batch_number=f"CORR{policy_link}",
         batch_description=f"Split Correction - Policy {policy_link}",
+        company_id=company_id,
     )
     return jsonify(body), status
 
